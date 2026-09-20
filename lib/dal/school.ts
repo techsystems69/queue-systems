@@ -9,8 +9,10 @@ import {
   type SchoolDashboardStats, type SchoolDepartmentStats, type SchoolKioskFeed,
   type DbSchoolSettings, type DbSchoolDepartment, type DbSchoolCounter,
   type DbSchoolToken, type DbSchoolActivityLog, type SchoolBranchIdentity,
-  type PublicTicketStatus,
+  type PublicTicketStatus, type SchoolCounterView,
 } from '@/lib/db/school-types'
+import { cached } from '@/lib/cache/store'
+import { keys, TTL } from '@/lib/cache/schoolCache'
 import { SCHOOL_TOKEN_PAGE_SIZE } from '@/lib/school/constants'
 import { getSchoolPublicTrackingEnabled } from '@/lib/dal/school-limits'
 
@@ -21,11 +23,17 @@ import { getSchoolPublicTrackingEnabled } from '@/lib/dal/school-limits'
 // ── Service date ──────────────────────────────────────────────
 // Always ask Postgres. Deriving "today" in JS is what makes the existing
 // dashboard disagree with the data before 03:00 Qatar time.
-export const getSchoolServiceDate = cache(async (branchId: string): Promise<string> => {
-  const supabase = createSupabaseServiceClient()
-  const { data } = await supabase.rpc('school_service_date', { p_branch_id: branchId })
-  return (data as string | null) ?? new Date().toISOString().slice(0, 10)
-})
+//
+// Cached across requests for a minute, TTL only: a mutation never moves the
+// service date, so binding it to the branch version would just cost an extra
+// RPC after every change. It flips at day_start_time, when nobody is at a window.
+export const getSchoolServiceDate = cache(async (branchId: string): Promise<string> =>
+  cached(keys.serviceDate(branchId), TTL.serviceDate, async () => {
+    const supabase = createSupabaseServiceClient()
+    const { data } = await supabase.rpc('school_service_date', { p_branch_id: branchId })
+    return { value: (data as string | null) ?? new Date().toISOString().slice(0, 10) }
+  })
+)
 
 // ── Settings ──────────────────────────────────────────────────
 export const getSchoolSettings = cache(async (branchId: string): Promise<SchoolSettingsDTO | null> => {
@@ -162,13 +170,36 @@ export const getSchoolKioskPacket = cache(async (branchToken: string): Promise<S
 })
 
 // ── TV board ──────────────────────────────────────────────────
-export const getSchoolBoard = cache(async (screenToken: string): Promise<SchoolBoardPacket> => {
-  const supabase = createSupabaseServiceClient()
-  const { data, error } = await supabase.rpc('get_school_board', { p_screen_token: screenToken })
+//
+// Served from memory (lib/cache/store.ts): the TV polls this every few seconds
+// and each miss is a Supabase read. Keyed by screenToken because the packet is
+// per-screen (screen_ads overrides, language, clock). The RPC no longer bumps
+// screens.last_seen_at — presence is written separately by lib/cache/presence.ts.
+export const getSchoolBoard = cache(async (screenToken: string): Promise<SchoolBoardPacket> =>
+  cached(keys.board(screenToken), TTL.board, async () => {
+    const supabase = createSupabaseServiceClient()
+    const { data, error } = await supabase.rpc('get_school_board', { p_screen_token: screenToken })
 
-  if (error || !data) return { status: 'not-found' }
-  return data as SchoolBoardPacket
-})
+    if (error || !data) return { value: { status: 'not-found' } as SchoolBoardPacket, cacheable: false }
+    const packet = data as SchoolBoardPacket
+    return {
+      value: packet,
+      branchId: packet.branchId ?? null,
+      customerId: packet.customerId ?? null,
+      // not-found / expired get the short negative TTL, unbound to a version.
+      cacheable: packet.status === 'ok',
+    }
+  })
+)
+
+// ── Cached department list ────────────────────────────────────
+// Active departments for a branch, shared by the counter console's 'issuable'
+// list and its lane names so each poll doesn't re-read them.
+export const getCachedActiveDepartments = (branchId: string): Promise<SchoolDepartmentDTO[]> =>
+  cached(keys.departments(branchId), TTL.departments, async () => ({
+    value: await getSchoolDepartments(branchId, { activeOnly: true }),
+    branchId,
+  }))
 
 // ── Public ticket tracking (public_code auth, no session) ─────
 // What the QR on a printed ticket points at. Not cache()'d: the public page
@@ -303,11 +334,19 @@ export async function getSchoolDashboardStats(branchId: string): Promise<SchoolD
 // rail exists to correct the tap that just happened, so the row someone is
 // reaching for is the top one, not the oldest in the queue.
 //
-// Not cache()d: the kiosk polls this through a server action and needs the
-// current row set, not the one memoised for the request that rendered it.
+// Not React cache()d: the kiosk polls this through a server action and needs the
+// current row set, not the one memoised for the request that rendered it. It IS
+// held in the in-process store (version-gated on the branch), so a poll with no
+// intervening change never reaches Supabase.
 const KIOSK_RECENT_LIMIT = 30
 
 export async function getSchoolKioskFeed(branchToken: string): Promise<SchoolKioskFeed> {
+  return cached(keys.kioskFeed(branchToken), TTL.kioskFeed, () => loadSchoolKioskFeed(branchToken))
+}
+
+async function loadSchoolKioskFeed(
+  branchToken: string
+): Promise<{ value: SchoolKioskFeed; branchId?: string; cacheable?: boolean }> {
   const supabase = createSupabaseServiceClient()
 
   const { data: branch } = await supabase
@@ -316,17 +355,19 @@ export async function getSchoolKioskFeed(branchToken: string): Promise<SchoolKio
     .eq('branch_token', branchToken)
     .maybeSingle()
 
-  if (!branch || !(branch as { is_active: boolean }).is_active) return { status: 'not-found' }
+  if (!branch || !(branch as { is_active: boolean }).is_active) {
+    return { value: { status: 'not-found' }, cacheable: false }
+  }
   const branchId = (branch as { id: string }).id
 
-  const { data: serviceDate } = await supabase.rpc('school_service_date', { p_branch_id: branchId })
+  const serviceDate = await getSchoolServiceDate(branchId)
 
   const [{ data: recent }, { data: waiting }, { count: issuedToday }] = await Promise.all([
     supabase
       .from('school_tokens')
       .select('*')
       .eq('branch_id', branchId)
-      .eq('service_date', serviceDate as string)
+      .eq('service_date', serviceDate)
       .order('joined_at', { ascending: false })
       .limit(KIOSK_RECENT_LIMIT),
     // Only the department column: this is a depth count per tile, and pulling
@@ -336,13 +377,13 @@ export async function getSchoolKioskFeed(branchToken: string): Promise<SchoolKio
       .from('school_tokens')
       .select('department_id')
       .eq('branch_id', branchId)
-      .eq('service_date', serviceDate as string)
+      .eq('service_date', serviceDate)
       .in('status', ['waiting', 'held']),
     supabase
       .from('school_tokens')
       .select('*', { count: 'exact', head: true })
       .eq('branch_id', branchId)
-      .eq('service_date', serviceDate as string),
+      .eq('service_date', serviceDate),
   ])
 
   const waitingRows = (waiting ?? []) as { department_id: string }[]
@@ -352,12 +393,140 @@ export async function getSchoolKioskFeed(branchToken: string): Promise<SchoolKio
   }
 
   return {
-    status: 'ok',
-    serviceDate: serviceDate as string,
-    recent: ((recent ?? []) as DbSchoolToken[]).map(toSchoolTokenDTO),
-    waitingByDepartment,
-    waitingTotal: waitingRows.length,
-    issuedToday: issuedToday ?? 0,
+    branchId,
+    value: {
+      status: 'ok',
+      serviceDate,
+      recent: ((recent ?? []) as DbSchoolToken[]).map(toSchoolTokenDTO),
+      waitingByDepartment,
+      waitingTotal: waitingRows.length,
+      issuedToday: issuedToday ?? 0,
+    },
+  }
+}
+
+// ── Counter console view ──────────────────────────────────────
+// What a counter terminal shows: its lane, its current token, the no-shows.
+// Polled every 15s per open console. Cold, it is up to 8 round trips; held in
+// the in-process store it is zero until the branch changes.
+//
+// Reads that used to be per-poll and are now shared: the service date (cached
+// across requests) and the branch's active departments (cached, and reused to
+// name this counter's lanes instead of a second `.in('id', …)` query).
+export const getSchoolCounterView = (counterToken: string): Promise<SchoolCounterView> =>
+  cached(keys.counterView(counterToken), TTL.counterView, () => loadSchoolCounterView(counterToken))
+
+async function loadSchoolCounterView(
+  counterToken: string
+): Promise<{ value: SchoolCounterView; branchId?: string; cacheable?: boolean }> {
+  const supabase = createSupabaseServiceClient()
+
+  const { data: counter } = await supabase
+    .from('school_counters')
+    .select('id, branch_id, name_en, name_ar, is_open, is_active, accepts_priority')
+    .eq('counter_token', counterToken)
+    .maybeSingle()
+
+  if (!counter || !(counter as { is_active: boolean }).is_active) {
+    return { value: { status: 'not-found' }, cacheable: false }
+  }
+
+  const c = counter as {
+    id: string; branch_id: string; name_en: string; name_ar: string
+    is_open: boolean; accepts_priority: boolean
+  }
+
+  const [serviceDate, activeDepartments, { data: links }] = await Promise.all([
+    getSchoolServiceDate(c.branch_id),
+    getCachedActiveDepartments(c.branch_id),
+    supabase
+      .from('school_counter_departments')
+      .select('department_id, preference')
+      .eq('counter_id', c.id)
+      .order('preference', { ascending: true }),
+  ])
+
+  const departmentIds = ((links ?? []) as { department_id: string }[]).map((l) => l.department_id)
+
+  const [{ data: current }, { data: waiting }, { data: noShows }, { count: servedToday }] =
+    await Promise.all([
+      supabase
+        .from('school_tokens')
+        .select('*')
+        .eq('counter_id', c.id)
+        .eq('status', 'called')
+        .maybeSingle(),
+      departmentIds.length
+        ? supabase
+            .from('school_tokens')
+            .select('*')
+            .eq('branch_id', c.branch_id)
+            .eq('service_date', serviceDate)
+            .in('department_id', departmentIds)
+            .in('status', ['waiting', 'held'])
+            .order('joined_at', { ascending: true })
+            .limit(40)
+        : Promise.resolve({ data: [] }),
+      departmentIds.length
+        ? supabase
+            .from('school_tokens')
+            .select('*')
+            .eq('branch_id', c.branch_id)
+            .eq('service_date', serviceDate)
+            .in('department_id', departmentIds)
+            .eq('status', 'no-show')
+            .order('called_at', { ascending: false })
+            .limit(20)
+        : Promise.resolve({ data: [] }),
+      supabase
+        .from('school_tokens')
+        .select('*', { count: 'exact', head: true })
+        .eq('counter_id', c.id)
+        .eq('service_date', serviceDate)
+        .eq('status', 'served'),
+    ])
+
+  const brief = (d: { id: string; nameEn: string; nameAr: string; prefix: string; color: string }) =>
+    ({ id: d.id, nameEn: d.nameEn, nameAr: d.nameAr, prefix: d.prefix, color: d.color })
+
+  // A counter can still be linked to a department that has since been
+  // deactivated — the lane must keep its name. The active list won't have it,
+  // so fetch just the missing ids (zero extra queries in the normal case).
+  const activeById = new Map(activeDepartments.map((d) => [d.id, d]))
+  const missingIds = departmentIds.filter((id) => !activeById.has(id))
+  const laneRows = new Map<string, ReturnType<typeof brief>>()
+  for (const id of departmentIds) {
+    const d = activeById.get(id)
+    if (d) laneRows.set(id, brief(d))
+  }
+  if (missingIds.length) {
+    const { data: extra } = await supabase
+      .from('school_departments')
+      .select('id, name_en, name_ar, prefix, color')
+      .in('id', missingIds)
+    for (const r of (extra ?? []) as
+      { id: string; name_en: string; name_ar: string; prefix: string; color: string }[]) {
+      laneRows.set(r.id, { id: r.id, nameEn: r.name_en, nameAr: r.name_ar, prefix: r.prefix, color: r.color })
+    }
+  }
+
+  return {
+    branchId: c.branch_id,
+    value: {
+      status: 'ok',
+      counterName: c.name_en,
+      counterNameAr: c.name_ar,
+      isOpen: c.is_open,
+      acceptsPriority: c.accepts_priority,
+      serviceDate,
+      current: current ? toSchoolTokenDTO(current as DbSchoolToken) : null,
+      waiting: ((waiting ?? []) as DbSchoolToken[]).map(toSchoolTokenDTO),
+      noShows: ((noShows ?? []) as DbSchoolToken[]).map(toSchoolTokenDTO),
+      // Manager's preference order, so the lane reads the way NEXT will behave.
+      departments: departmentIds.map((id) => laneRows.get(id)).filter((d) => d !== undefined),
+      issuable: activeDepartments.map(brief),
+      servedToday: servedToday ?? 0,
+    },
   }
 }
 

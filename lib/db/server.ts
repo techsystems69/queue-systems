@@ -28,10 +28,26 @@ export async function createSupabaseServerClient() {
   )
 }
 
+// One shared client. It is stateless — no session persisted, no token refresh,
+// no per-request auth — so reusing it is safe, and constructing a fresh one per
+// call (the counter console alone made up to four per poll) is pure CPU/GC
+// churn on a small VPS. Parked on globalThis so every module registry Next
+// bundles shares it, and keyed by URL+key so a config change is picked up.
+const SERVICE_CLIENT = Symbol.for('queue-system.serviceClient')
+
+function makeServiceClient(url: string, key: string) {
+  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } })
+}
+type ServiceClient = ReturnType<typeof makeServiceClient>
+
 export function createSupabaseServiceClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    { auth: { autoRefreshToken: false, persistSession: false } }
-  )
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!
+  const g = globalThis as unknown as Record<symbol, { id: string; client: ServiceClient } | undefined>
+  const id = `${url}|${key}`
+  const held = g[SERVICE_CLIENT]
+  if (held && held.id === id) return held.client
+  const client = makeServiceClient(url, key)
+  g[SERVICE_CLIENT] = { id, client }
+  return client
 }

@@ -1511,6 +1511,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.get_school_board(p_screen_token text)
 RETURNS json
 LANGUAGE plpgsql
+STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
@@ -1533,8 +1534,11 @@ BEGIN
     RETURN json_build_object('status', 'not-found');
   END IF;
 
-  -- Presence heartbeat (the board is the only thing that ever touches the TV).
-  UPDATE public.screens SET last_seen_at = now() WHERE id = v_screen.id;
+  -- Presence is deliberately NOT written here. This read is served from an
+  -- in-process cache (lib/cache/store.ts) and usually never reaches Postgres,
+  -- so it can no longer double as a heartbeat. The app writes screens.last_seen_at
+  -- separately and throttled — lib/cache/presence.ts#touchScreen. That is also
+  -- why the function is STABLE: it has no side effects.
 
   SELECT * INTO v_branch   FROM public.branches  WHERE id = v_screen.branch_id;
   SELECT * INTO v_customer FROM public.customers WHERE id = v_screen.customer_id;
@@ -1596,6 +1600,9 @@ BEGIN
 
   -- Ads: screen override wins, else branch + customer merged per branch_ad_mode.
   -- Same cascade as get_screen_data — kept in sync deliberately.
+  -- Projected to the six fields the clients read (web SchoolBoard, Flutter
+  -- BoardAd) rather than json_agg'ing whole rows: this packet is re-served on
+  -- every poll and SSE frame, so file_size_bytes and timestamps are pure weight.
   DECLARE
     v_screen_ad_count int;
   BEGIN
@@ -1603,7 +1610,10 @@ BEGIN
       FROM public.screen_ads sa WHERE sa.screen_id = v_screen.id;
 
     IF v_screen_ad_count > 0 THEN
-      SELECT json_agg(a ORDER BY sa.display_order ASC) INTO v_ads
+      SELECT json_agg(json_build_object(
+                 'id', a.id, 'file_url', a.file_url, 'file_type', a.file_type,
+                 'duration_seconds', a.duration_seconds, 'is_active', a.is_active,
+                 'audio_enabled', a.audio_enabled) ORDER BY sa.display_order ASC) INTO v_ads
         FROM public.screen_ads sa
         JOIN public.ads a ON a.id = sa.ad_id
        WHERE sa.screen_id = v_screen.id AND a.is_active = true;
@@ -1612,10 +1622,16 @@ BEGIN
         v_branch_ads   json;
         v_customer_ads json;
       BEGIN
-        SELECT json_agg(a ORDER BY a.display_order) INTO v_branch_ads
+        SELECT json_agg(json_build_object(
+                 'id', a.id, 'file_url', a.file_url, 'file_type', a.file_type,
+                 'duration_seconds', a.duration_seconds, 'is_active', a.is_active,
+                 'audio_enabled', a.audio_enabled) ORDER BY a.display_order) INTO v_branch_ads
           FROM public.ads a WHERE a.branch_id = v_branch.id AND a.is_active = true;
 
-        SELECT json_agg(a ORDER BY a.display_order) INTO v_customer_ads
+        SELECT json_agg(json_build_object(
+                 'id', a.id, 'file_url', a.file_url, 'file_type', a.file_type,
+                 'duration_seconds', a.duration_seconds, 'is_active', a.is_active,
+                 'audio_enabled', a.audio_enabled) ORDER BY a.display_order) INTO v_customer_ads
           FROM public.ads a
          WHERE a.customer_id = v_customer.id AND a.branch_id IS NULL AND a.is_active = true;
 
@@ -1634,7 +1650,7 @@ BEGIN
     END IF;
   END;
 
-  SELECT json_agg(t ORDER BY t.display_order) INTO v_tickers
+  SELECT json_agg(json_build_object('id', t.id, 'message', t.message) ORDER BY t.display_order) INTO v_tickers
     FROM public.ticker_messages t
    WHERE t.is_active = true
      AND (t.branch_id = v_branch.id OR (t.branch_id IS NULL AND t.customer_id = v_customer.id));
