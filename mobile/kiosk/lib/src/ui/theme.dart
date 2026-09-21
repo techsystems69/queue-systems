@@ -25,6 +25,11 @@ class KioskPalette {
   static const inkSoft = Color(0xFF5B6577);
   static const inkFaint = Color(0xFF98A1B0);
 
+  /// The announcement board's "called" colour — emerald-600, the web board's
+  /// `accent-600` (app/globals.css). Fixed rather than per-department so the
+  /// two boards read as the same product.
+  static const accent = Color(0xFF059669);
+
   static const primary = Color(0xFF2F5BEA);
   static const primaryInk = Color(0xFFFFFFFF);
   static const primarySoft = Color(0xFFE9EEFE);
