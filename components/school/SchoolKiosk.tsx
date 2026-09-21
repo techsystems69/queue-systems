@@ -43,7 +43,7 @@ interface Props {
   publicTrackingEnabled: boolean
 }
 
-const FEED_POLL_MS = 6000
+const FEED_POLL_MS = 20000
 const RECENT_LIMIT = 30
 
 const COPY = {
@@ -204,9 +204,19 @@ export function SchoolKiosk({
     if (next.status === 'ok') setFeed(next)
   }, [branchToken])
 
+  // Pause while the tab is hidden — a backgrounded kiosk has no visitor reading
+  // the rail, and every issued token folds itself into the feed optimistically.
   useEffect(() => {
-    const id = setInterval(refresh, FEED_POLL_MS)
-    return () => clearInterval(id)
+    let id: ReturnType<typeof setInterval> | undefined
+    const start = () => { if (id === undefined) id = setInterval(refresh, FEED_POLL_MS) }
+    const stop = () => { if (id !== undefined) { clearInterval(id); id = undefined } }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') { refresh(); start() }
+      else stop()
+    }
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
   }, [refresh])
 
   // ── Printing ────────────────────────────────────────────────
