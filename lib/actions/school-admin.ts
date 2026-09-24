@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { publishSchoolChange } from '@/lib/cache/schoolCache'
 import { z } from 'zod'
 import { createSupabaseServiceClient } from '@/lib/db/server'
 import { requireBranchManager } from '@/lib/dal/session'
@@ -137,6 +138,10 @@ export async function createSchoolDepartmentAction(
   }
   if (error || !data) return { error: 'Could not create the department' }
 
+  // Every admin mutation below changes what a device shows (department names,
+  // lanes, counter links, settings), so each invalidates the branch's cached
+  // device reads and wakes open SSE streams alongside revalidatePath.
+  publishSchoolChange(parsed.data.branchId)
   revalidatePath('/school/departments')
   return { department: toSchoolDepartmentDTO(data as DbSchoolDepartment) }
 }
@@ -187,6 +192,7 @@ export async function updateSchoolDepartmentAction(
   if (error?.code === '23505') return { error: 'That prefix is already in use' }
   if (error || !data) return { error: 'Could not update the department' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/departments')
   return { department: toSchoolDepartmentDTO(data as DbSchoolDepartment) }
 }
@@ -294,6 +300,7 @@ export async function deleteSchoolDepartmentAction(
 
   if (error) return { error: 'Could not delete the department' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/departments')
   revalidatePath('/school/counters')
   return { deleted: true }
@@ -329,6 +336,7 @@ export async function reorderSchoolDepartmentsAction(
 
   if (results.some((r) => r.error)) return { error: 'Could not save the new order' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/departments')
   return {}
 }
@@ -394,6 +402,7 @@ export async function seedSchoolDepartmentsAction(
   const { error } = await supabase.from('school_departments').insert(rows)
   if (error) return { error: 'Could not add the default departments' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/departments')
   return { created: rows.length }
 }
@@ -448,6 +457,7 @@ export async function createSchoolCounterAction(
   if (error?.code === '23505') return { error: 'That keypad code is already used at this branch' }
   if (error || !data) return { error: 'Could not create the counter' }
 
+  publishSchoolChange(parsed.data.branchId)
   revalidatePath('/school/counters')
   return { counter: toSchoolCounterDTO(data as DbSchoolCounter) }
 }
@@ -482,6 +492,7 @@ export async function setSchoolCounterDepartmentsAction(
     if (error) return { error: 'Could not save the department assignment' }
   }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/counters')
   return {}
 }
@@ -528,6 +539,7 @@ export async function updateSchoolCounterAction(
   if (error?.code === '23505') return { error: 'That keypad code is already used at this branch' }
   if (error || !data) return { error: 'Could not update the counter' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/counters')
   return { counter: toSchoolCounterDTO(data as DbSchoolCounter) }
 }
@@ -554,6 +566,7 @@ export async function regenerateSchoolCounterTokenAction(
 
   if (error || !data) return { error: 'Could not regenerate the counter link' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/counters')
   return { counter: toSchoolCounterDTO(data as DbSchoolCounter) }
 }
@@ -669,6 +682,7 @@ export async function saveSchoolSettingsAction(
 
   if (error || !data) return { error: 'Could not save settings' }
 
+  publishSchoolChange(d.branchId)
   revalidatePath('/school/settings')
   return { settings: toSchoolSettingsDTO(data as DbSchoolSettings) }
 }
@@ -727,6 +741,7 @@ export async function createSchoolScreenAction(
 
   if (error || !data) return { error: 'Could not create the screen' }
 
+  publishSchoolChange(branchId)
   revalidatePath('/school/screens')
   return { screenToken: (data as { screen_token: string }).screen_token }
 }

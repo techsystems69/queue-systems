@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { publishSchoolChange, publishCustomerChange } from '@/lib/cache/schoolCache'
 import { z } from 'zod'
 import { createSupabaseServiceClient } from '@/lib/db/server'
 import { requireAdmin, requireBranchManager } from '@/lib/dal/session'
@@ -103,9 +104,13 @@ export async function createAdAction(
 // Both products read the same `ads` table: the business ad manager lives at
 // /branches/[id]/ads, the school one at /school/ads. Revalidate both so an edit
 // from either side is reflected everywhere.
+//
+// Also the invalidation point for the cached school board: the board packet
+// carries the ads and tickers, so any edit here must drop it.
 function revalidateAdPaths(branchId: string) {
   revalidatePath(`/branches/${branchId}/ads`)
   revalidatePath('/school/ads')
+  publishSchoolChange(branchId)
 }
 
 // ── Toggle ad active ──────────────────────────────────────────
@@ -416,6 +421,8 @@ export async function createCommonAdAction(
   if (error) return { error: 'Failed to create ad' }
 
   revalidatePath('/ads')
+  // Common ads feed every branch's board through the branch_ad_mode cascade.
+  await publishCustomerChange(profile.customerId)
   return {}
 }
 
@@ -442,6 +449,8 @@ export async function toggleCommonAdActiveAction(adId: string): Promise<{ error?
   if (error) return { error: 'Failed to update ad' }
 
   revalidatePath('/ads')
+  // Common ads feed every branch's board through the branch_ad_mode cascade.
+  await publishCustomerChange(profile.customerId)
   return {}
 }
 
@@ -469,6 +478,8 @@ export async function deleteCommonAdAction(adId: string): Promise<{ error?: stri
   if (ad?.file_url) await deleteAdFileByUrl(ad.file_url)
 
   revalidatePath('/ads')
+  // Common ads feed every branch's board through the branch_ad_mode cascade.
+  await publishCustomerChange(profile.customerId)
   return {}
 }
 
@@ -514,5 +525,7 @@ export async function setScreenAdsAction(
   }
 
   revalidatePath(`/branches/${branchId}/screens`)
+  // The screen_ads override is part of that screen's cached board packet.
+  publishSchoolChange(branchId)
   return {}
 }

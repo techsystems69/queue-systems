@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../../theme.dart';
 
-/// Bottom marquee — scrolls [message] right-to-left continuously. Simple
+/// Bottom marquee — scrolls [message] right-to-left continuously. Styled like
+/// the web board's footer (components/school/SchoolBoard.tsx): a light bar with
+/// an accent stripe on the left. Simple
 /// linear-scroll implementation (an `AnimationController` driving a
 /// `Transform.translate`) rather than a package: it's one behaviour, and the
 /// RK3566-class hardware this runs on has no GPU headroom to spare on a
@@ -22,7 +24,7 @@ class _BoardTickerState extends State<BoardTicker> with SingleTickerProviderStat
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 20))
+    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 38))
       ..repeat();
   }
 
@@ -39,14 +41,28 @@ class _BoardTickerState extends State<BoardTicker> with SingleTickerProviderStat
     // 18px strip is a grey smudge on a wall-mounted panel.
     final fontSize = 30 * widget.scale;
     final style = TextStyle(
-      color: Colors.white,
+      color: KioskPalette.inkSoft,
       fontSize: fontSize,
-      fontWeight: FontWeight.w600,
+      fontWeight: FontWeight.w500,
     );
 
     return Container(
       height: 64 * widget.scale,
-      color: KioskPalette.ink,
+      decoration: const BoxDecoration(
+        color: KioskPalette.surface,
+        border: Border(top: BorderSide(color: KioskPalette.border)),
+      ),
+      child: Row(
+        children: [
+          Container(width: 6 * widget.scale, color: KioskPalette.accent),
+          Expanded(child: _marquee(style)),
+        ],
+      ),
+    );
+  }
+
+  Widget _marquee(TextStyle style) {
+    return SizedBox(
       child: ClipRect(
         child: LayoutBuilder(builder: (context, constraints) {
           // Measured once per layout, not once per frame: the old build did

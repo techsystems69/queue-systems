@@ -12,8 +12,11 @@ class AppConfig {
     defaultValue: 'http://10.0.2.2:3000',
   );
 
-  /// FEED_POLL_MS in components/school/SchoolKiosk.tsx.
-  static const Duration feedPollInterval = Duration(seconds: 6);
+  /// FEED_POLL_MS in components/school/SchoolKiosk.tsx. The rail is just
+  /// recently-issued tickets and every local issue folds itself in
+  /// optimistically, so a slower poll costs nothing visible while roughly
+  /// halving the kiosk's serverless-invocation load on an idle terminal.
+  static const Duration feedPollInterval = Duration(seconds: 20);
 
   /// RECENT_LIMIT in components/school/SchoolKiosk.tsx.
   static const int recentLimit = 30;

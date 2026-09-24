@@ -108,8 +108,8 @@ void main() {
       BoardCounterTable(counters: [counter(0, called: true)], scale: 1),
     ));
     await tester.pumpAndSettle();
-    expect(find.text('ADMISSIONS'), findsOneWidget);
-    expect(find.text('القبول'), findsOneWidget);
+    // Under the counter name, as on the web board — plain case, no Arabic line.
+    expect(find.text('Admissions'), findsOneWidget);
   });
 
   testWidgets('an uncalled row claims no department', (tester) async {
@@ -120,10 +120,10 @@ void main() {
     await tester.pumpAndSettle();
     // The packet still carries department_en for an idle counter; showing it
     // would read as "Admissions is being served" when nothing was called.
-    expect(find.text('ADMISSIONS'), findsNothing);
+    expect(find.text('Admissions'), findsNothing);
   });
 
-  testWidgets('the waiting strip totals every department', (tester) async {
+  testWidgets('the waiting strip shows a count pill per department', (tester) async {
     setViewport(tester, const Size(1920, 1080));
     await tester.pumpWidget(host(Align(
       alignment: Alignment.bottomCenter,
@@ -134,8 +134,53 @@ void main() {
     )));
     await tester.pumpAndSettle();
     expect(find.text('18'), findsOneWidget);
-    expect(find.text('TOTAL 22'), findsOneWidget);
+    expect(find.text('4'), findsOneWidget);
+    expect(find.text('Department 0'), findsOneWidget);
   });
+
+  testWidgets('a called counter is a solid accent card; an idle one is plain white', (tester) async {
+    setViewport(tester, const Size(1920, 1080));
+    await tester.pumpWidget(host(
+      BoardCounterTable(counters: [counter(0, called: true), counter(1)], scale: 1),
+    ));
+    await tester.pumpAndSettle();
+
+    Color? fill(String tokenOrDash) {
+      final card = find.ancestor(
+        of: find.text(tokenOrDash),
+        matching: find.byWidgetPredicate(
+          (w) => w is Container && w.decoration is BoxDecoration &&
+              (w.decoration as BoxDecoration).borderRadius != null,
+        ),
+      );
+      return ((tester.widget<Container>(card.first)).decoration as BoxDecoration).color;
+    }
+
+    expect(fill('A100'), KioskPalette.accent);
+    expect(fill('—'), KioskPalette.surface);
+    expect(find.text('Please proceed'), findsOneWidget);
+    expect(find.text('Available'), findsOneWidget);
+  });
+
+  // No ad rail + more than six windows -> two cards per line, as on the web board.
+  for (final size in const [Size(1920, 1080), Size(1280, 720), Size(3840, 2160)]) {
+    for (final count in const [7, 8, 12]) {
+      testWidgets('two-column grid lays out $count counters at $size', (tester) async {
+        setViewport(tester, size);
+        await tester.pumpWidget(host(
+          BoardCounterTable(
+            counters: [for (var i = 0; i < count; i++) counter(i, called: i.isEven)],
+            scale: boardScaleForSize(size),
+            twoColumn: true,
+          ),
+        ));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        expect(find.text('Counter 0'), findsOneWidget);
+        expect(find.text('Counter ${count - 1}'), findsOneWidget);
+      });
+    }
+  }
 
   testWidgets('ticker lays out with a long message', (tester) async {
     setViewport(tester, const Size(1920, 1080));
@@ -152,6 +197,6 @@ void main() {
     await tester.pumpWidget(host(BoardCounterTable(counters: const [], scale: 1)));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    expect(find.text('No counters open'), findsOneWidget);
+    expect(find.text('No counters are open right now'), findsOneWidget);
   });
 }

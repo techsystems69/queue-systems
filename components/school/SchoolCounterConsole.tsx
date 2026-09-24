@@ -21,7 +21,7 @@ import {
 import { fetchSchoolCounterViewAction, type SchoolCounterView } from '@/lib/actions/school-read'
 
 const MAX_CODE_LENGTH = 8
-const POLL_MS = 5000
+const POLL_MS = 15000
 const HEARTBEAT_MS = 20000
 
 /*
@@ -50,11 +50,26 @@ export function SchoolCounterConsole({ counterToken, initial }: {
   }, [counterToken])
 
   // These tables are service-role-only, so the console can't subscribe to
-  // postgres_changes with the publishable key — it polls instead. Five seconds
-  // is well inside the time it takes to serve one visitor.
+  // postgres_changes with the publishable key — it polls instead. Fifteen
+  // seconds is well inside the time it takes to serve one visitor, and every
+  // clerk action already calls refresh() straight away. Polling stops while the
+  // tab is hidden — an unattended terminal shouldn't keep hitting the function
+  // — and catches up on the way back.
   useEffect(() => {
-    const id = setInterval(refresh, POLL_MS)
-    return () => clearInterval(id)
+    let id: ReturnType<typeof setInterval> | undefined
+    const start = () => {
+      if (id === undefined) id = setInterval(refresh, POLL_MS)
+    }
+    const stop = () => {
+      if (id !== undefined) { clearInterval(id); id = undefined }
+    }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') { refresh(); start() }
+      else stop()
+    }
+    onVisibility()
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => { stop(); document.removeEventListener('visibilitychange', onVisibility) }
   }, [refresh])
 
   useEffect(() => {

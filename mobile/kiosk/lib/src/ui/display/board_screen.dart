@@ -138,6 +138,19 @@ class _Board extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final activeAds = packet.ads.where((a) => a.isActive).toList();
+    final hasAds = activeAds.isNotEmpty;
+    final openCount = packet.counters.where((c) => c.isOpen).length;
+
+    // Same rule as the web board: with no ad rail taking the width, a long run
+    // of windows reads better as a two-up grid than a tall stack of short bars.
+    final twoColumn = !hasAds && openCount > 6;
+
+    // The settings ticker line plus every active ticker message, joined the way
+    // the web board joins them. The board used to read only `tickerText`, so a
+    // school that managed its ticker from the Ads page saw nothing here.
+    final ticker = [packet.tickerText, ...packet.tickers.map((t) => t.message)]
+        .where((s) => s.trim().isNotEmpty)
+        .join('   •   ');
 
     return Stack(
       children: [
@@ -149,15 +162,15 @@ class _Board extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   Expanded(
-                    // The table carries the four columns now, so the rail gives
-                    // back a slice of width to keep the token glyphs large.
-                    flex: activeAds.isEmpty ? 100 : 70,
+                    // 62 / 38, matching the web board.
+                    flex: hasAds ? 62 : 100,
                     child: Column(
                       children: [
                         Expanded(
                           child: BoardCounterTable(
                             counters: packet.counters,
                             scale: scale,
+                            twoColumn: twoColumn,
                           ),
                         ),
                         if (packet.departments.isNotEmpty)
@@ -168,18 +181,23 @@ class _Board extends StatelessWidget {
                       ],
                     ),
                   ),
-                  if (activeAds.isNotEmpty)
+                  if (hasAds)
                     Expanded(
-                      flex: 30,
-                      child: BoardAdRail(
-                        ads: activeAds,
-                        isSpeaking: announcer.isSpeaking,
+                      flex: 38,
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          border: Border(left: BorderSide(color: KioskPalette.border)),
+                        ),
+                        child: BoardAdRail(
+                          ads: activeAds,
+                          isSpeaking: announcer.isSpeaking,
+                        ),
                       ),
                     ),
                 ],
               ),
             ),
-            BoardTicker(message: packet.tickerText, scale: scale),
+            BoardTicker(message: ticker, scale: scale),
           ],
         ),
         if (flash != null) NowCallingOverlay(counter: flash!, onDismiss: onDismissFlash),
@@ -196,21 +214,25 @@ class _Header extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 116 * scale,
-      padding: EdgeInsets.symmetric(horizontal: 28 * scale),
+      padding: EdgeInsets.symmetric(horizontal: 24 * scale, vertical: 12 * scale),
       decoration: const BoxDecoration(
         color: KioskPalette.surface,
-        border: Border(bottom: BorderSide(color: KioskPalette.borderStrong, width: 2)),
+        border: Border(bottom: BorderSide(color: KioskPalette.border)),
       ),
       child: Row(
         children: [
           if (packet.logoUrl.isNotEmpty)
             Padding(
-              padding: EdgeInsets.only(right: 20 * scale),
-              child: Image.network(
-                packet.logoUrl,
-                height: 72 * scale,
-                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              padding: EdgeInsets.only(right: 16 * scale),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(8 * scale),
+                child: Image.network(
+                  packet.logoUrl,
+                  width: 64 * scale,
+                  height: 64 * scale,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, _, _) => const SizedBox.shrink(),
+                ),
               ),
             ),
           Expanded(
@@ -221,26 +243,32 @@ class _Header extends StatelessWidget {
               children: [
                 Text(
                   packet.schoolNameEn,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontSize: 42 * scale,
-                    fontWeight: FontWeight.w800,
-                    height: 1.1,
+                    fontWeight: FontWeight.w700,
+                    height: 1.15,
                     color: KioskPalette.ink,
                   ),
-                  overflow: TextOverflow.ellipsis,
                 ),
                 if (packet.schoolNameAr.isNotEmpty)
+                  // Full-width rtl block: the Arabic name sits at the trailing
+                  // edge of the column, as on the web board.
                   Directionality(
                     textDirection: TextDirection.rtl,
-                    child: Text(
-                      packet.schoolNameAr,
-                      style: TextStyle(
-                        fontSize: 26 * scale,
-                        fontWeight: FontWeight.w600,
-                        height: 1.2,
-                        color: KioskPalette.inkSoft,
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Text(
+                        packet.schoolNameAr,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 24 * scale,
+                          height: 1.2,
+                          color: KioskPalette.inkSoft,
+                        ),
                       ),
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
               ],
@@ -253,6 +281,9 @@ class _Header extends StatelessWidget {
   }
 }
 
+/// Time to the second plus the date, right-aligned — `DisplayClock` on the web.
+/// Fixed-width digits (tabular figures) keep the seconds from jiggling the layout
+/// without depending on a `monospace` font family being present on the device.
 class _BoardClock extends StatefulWidget {
   const _BoardClock({required this.scale});
   final double scale;
@@ -265,21 +296,20 @@ class _BoardClockState extends State<_BoardClock> {
   DateTime _now = DateTime.now();
   Timer? _timer;
 
+  static const _weekdays = [
+    'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
+  ];
+  static const _months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+
   @override
   void initState() {
     super.initState();
-    _scheduleNextMinute();
-  }
-
-  void _scheduleNextMinute() {
-    final now = DateTime.now();
-    final next = DateTime(now.year, now.month, now.day, now.hour, now.minute)
-        .add(const Duration(minutes: 1));
-    _timer?.cancel();
-    _timer = Timer(next.difference(now), () {
-      if (!mounted) return;
-      setState(() => _now = DateTime.now());
-      _scheduleNextMinute();
+    // Once a second, on the second: the seconds digit is the one people watch.
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
     });
   }
 
@@ -291,17 +321,32 @@ class _BoardClockState extends State<_BoardClock> {
 
   @override
   Widget build(BuildContext context) {
+    String two(int n) => n.toString().padLeft(2, '0');
     final hour = _now.hour % 12 == 0 ? 12 : _now.hour % 12;
-    final minute = _now.minute.toString().padLeft(2, '0');
-    final ampm = _now.hour >= 12 ? 'PM' : 'AM';
-    return Text(
-      '$hour:$minute $ampm',
-      style: TextStyle(
-        fontSize: 40 * widget.scale,
-        fontWeight: FontWeight.w700,
-        fontFeatures: const [FontFeature.tabularFigures()],
-        color: KioskPalette.ink,
-      ),
+    final time = '${two(hour)}:${two(_now.minute)}:${two(_now.second)} '
+        '${_now.hour >= 12 ? 'PM' : 'AM'}';
+    final date = '${_weekdays[_now.weekday - 1]}, ${_months[_now.month - 1]} ${_now.day}';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          time,
+          style: TextStyle(
+            fontSize: 36 * widget.scale,
+            fontWeight: FontWeight.w700,
+            height: 1.0,
+            fontFeatures: const [FontFeature.tabularFigures()],
+            color: KioskPalette.ink,
+          ),
+        ),
+        SizedBox(height: 4 * widget.scale),
+        Text(
+          date,
+          style: TextStyle(fontSize: 17 * widget.scale, color: KioskPalette.inkSoft),
+        ),
+      ],
     );
   }
 }

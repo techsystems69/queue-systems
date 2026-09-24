@@ -6,6 +6,8 @@ import {
   type SchoolTokenDTO, type SchoolActivityType, type DbSchoolToken,
 } from '@/lib/db/school-types'
 import { isRegionLocale, type LocaleMap } from '@/lib/region'
+import { publishSchoolChange } from '@/lib/cache/schoolCache'
+import { touchCounter } from '@/lib/cache/presence'
 
 export interface SchoolTokenResult {
   token?: SchoolTokenDTO
@@ -62,11 +64,17 @@ export interface SchoolCallSignal {
   recallCount: number
 }
 
-async function broadcastSchoolCall(
+// Two hops, in this order: (1) in-process — bump the branch version and wake every
+// open SSE stream, synchronous and free; (2) the Supabase Realtime broadcast,
+// kept for now so a board still running the old client keeps its instant calls.
+// (1) goes first so a slow or failing (2) can never delay the boards that matter.
+async function publishSchoolCall(
   branchId: string,
   event: 'token-called' | 'token-recalled',
   payload: SchoolCallSignal
 ) {
+  publishSchoolChange(branchId, event === 'token-called' ? 'call' : 'recall', payload)
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
   if (!url || !key) return
@@ -99,17 +107,31 @@ async function logSchoolActivity(supabase: any, row: {
   tokenCode: string
   message: string
 }) {
-  await supabase.from('school_activity_logs').insert({
-    customer_id: row.customerId,
-    branch_id: row.branchId,
-    token_id: row.tokenId ?? null,
-    counter_id: row.counterId ?? null,
-    department_id: row.departmentId ?? null,
-    source: row.source ?? 'staff',
-    type: row.type,
-    token_code: row.tokenCode,
-    message: row.message,
-  })
+  try {
+    await supabase.from('school_activity_logs').insert({
+      customer_id: row.customerId,
+      branch_id: row.branchId,
+      token_id: row.tokenId ?? null,
+      counter_id: row.counterId ?? null,
+      department_id: row.departmentId ?? null,
+      source: row.source ?? 'staff',
+      type: row.type,
+      token_code: row.tokenCode,
+      message: row.message,
+    })
+  } finally {
+    // The choke point for cache invalidation. Every caller runs this AFTER its
+    // own write succeeded, so an activity-logged event is by definition a
+    // board-visible change: bump the branch version (dropping every cached
+    // device read bound to it) and wake open SSE streams. `finally` because the
+    // mutation is already committed — a failed log insert must not leave boards
+    // showing the old state.
+    //
+    // Covers: call-code, recall, done/no-show/hold, transfer, kiosk cancel,
+    // kiosk move, counter open/close. The paths that log elsewhere (inside the
+    // claim/call RPCs) or not at all publish explicitly at their own call sites.
+    publishSchoolChange(row.branchId)
+  }
 }
 
 // Announce payload needs the department name, which the token row doesn't
@@ -197,6 +219,10 @@ export async function schoolIssueTokenAction(
   })
 
   if (error || !data) return { error: 'Could not issue a token. Please ask for assistance.' }
+
+  // The activity log is written inside claim_school_token, so it doesn't pass
+  // through logSchoolActivity — invalidate here.
+  publishSchoolChange((branch as { id: string }).id)
 
   const row = data as DbSchoolToken
   return { token: toSchoolTokenDTO(row), waitingAhead: await countWaitingAhead(supabase, row) }
@@ -316,6 +342,9 @@ export async function schoolKioskSetPriorityAction(
     .single()
 
   if (error || !updated) return { error: `Could not update ${row.token_code}` }
+  // Writes no activity log, so nothing else would invalidate: priority changes
+  // where a token sorts and what the counter lane shows.
+  publishSchoolChange(branch.id)
   return { token: toSchoolTokenDTO(updated as DbSchoolToken) }
 }
 
@@ -422,7 +451,7 @@ export async function schoolCallNextAction(counterToken: string): Promise<School
   const token = toSchoolTokenDTO(row)
   const dept = await departmentNames(supabase, token.departmentId)
 
-  await broadcastSchoolCall(counter.branch_id, 'token-called', {
+  await publishSchoolCall(counter.branch_id, 'token-called', {
     tokenCode: token.tokenCode,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
@@ -487,6 +516,9 @@ export async function schoolIssueAtCounterAction(
   // returning a row type hands back an all-null row, not JSON null.
   const row = data as DbSchoolToken | null
   if (!row?.id) return { error: 'Could not issue a token' }
+
+  // Logged inside claim_school_token, not via logSchoolActivity.
+  publishSchoolChange(counter.branch_id)
 
   return { token: toSchoolTokenDTO(row) }
 }
@@ -601,7 +633,7 @@ export async function schoolCallCodeAction(
     message: `${token.tokenCode} called to ${counter.name_en}`,
   })
 
-  await broadcastSchoolCall(counter.branch_id, 'token-called', {
+  await publishSchoolCall(counter.branch_id, 'token-called', {
     tokenCode: token.tokenCode,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
@@ -664,7 +696,7 @@ export async function schoolRecallAction(counterToken: string): Promise<SchoolTo
     message: `${token.tokenCode} recalled (×${token.recallCount})`,
   })
 
-  await broadcastSchoolCall(counter.branch_id, 'token-recalled', {
+  await publishSchoolCall(counter.branch_id, 'token-recalled', {
     tokenCode: token.tokenCode,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
@@ -793,12 +825,11 @@ export async function schoolTransferAction(
 }
 
 // ── Counter presence & shift toggle ───────────────────────────
+// The client pings every 20s; touchCounter writes at most once per 45s. This
+// must NOT publishSchoolChange — heartbeats would invalidate every board in the
+// branch on every ping.
 export async function schoolCounterHeartbeatAction(counterToken: string): Promise<void> {
-  const supabase = createSupabaseServiceClient()
-  await supabase
-    .from('school_counters')
-    .update({ last_seen_at: new Date().toISOString() })
-    .eq('counter_token', counterToken)
+  await touchCounter(counterToken)
 }
 
 export async function schoolToggleCounterOpenAction(

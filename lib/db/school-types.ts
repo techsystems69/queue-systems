@@ -536,3 +536,25 @@ export interface PublicTicketStatus {
   etaSeconds?: number
   paceSampleCount?: number
 }
+
+// ── Counter console view ──────────────────────────────────────
+export interface SchoolCounterView {
+  status: 'ok' | 'not-found'
+  counterName?: string
+  counterNameAr?: string
+  isOpen?: boolean
+  acceptsPriority?: boolean
+  serviceDate?: string
+  current?: SchoolTokenDTO | null
+  waiting?: SchoolTokenDTO[]
+  // Called, nobody came. Kept out of `waiting` so the lane stays a true queue,
+  // but surfaced separately: a visitor who missed their call and came back is
+  // routine, and without this the console shows no trace of them at all.
+  noShows?: SchoolTokenDTO[]
+  departments?: { id: string; nameEn: string; nameAr: string; prefix: string; color: string }[]
+  // Every active department of the branch — what staff may issue a walk-in
+  // token against. Wider than `departments` (which is only what this window
+  // serves) because Reception issuing a Fees token is a normal school flow.
+  issuable?: { id: string; nameEn: string; nameAr: string; prefix: string; color: string }[]
+  servedToday?: number
+}
