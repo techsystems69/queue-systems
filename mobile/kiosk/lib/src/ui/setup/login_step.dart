@@ -2,7 +2,25 @@ import 'package:flutter/material.dart';
 
 import '../theme.dart';
 
-/// The app's front door: sign in with a queue-system account. There is no
+/// Brand colours for the sign-in surfaces. Shared with the web's sign-in /
+/// activation pages (`--color-brand-*` in app/globals.css) so the two read as
+/// one product.
+class _Brand {
+  _Brand._();
+
+  static const panel = Color(0xFF1A4537);
+  static const action = Color(0xFF1F6650);
+  static const actionPressed = Color(0xFF185340);
+  static const mint = Color(0xFFB7E0CF);
+  static const mintSoft = Color(0xFFD5EEE3);
+  static const canvas = Color(0xFFFCFCFA);
+  static const field = Color(0xFFF6F6F4);
+  static const fieldBorder = Color(0xFFE4E4DF);
+  static const ink = Color(0xFF12141A);
+  static const icon = Color(0xFF3B3F46);
+}
+
+/// The app's front door: sign in with a QueueFlow account. There is no
 /// pairing code and no product picker — the account's tenant decides the
 /// product (hotel / school / hospital), and the next screen lists what this
 /// device can become.
@@ -42,60 +60,100 @@ class _LoginStepState extends State<LoginStep> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, box) {
-        final wide = box.maxWidth >= 860;
-        // With the on-screen keyboard up a landscape terminal has ~400dp left:
-        // drop the brand panel so the form gets the whole height.
-        final keyboardUp = MediaQuery.viewInsetsOf(context).bottom > 0;
-        final showBrand = wide && !keyboardUp;
+    return ColoredBox(
+      color: _Brand.canvas,
+      child: LayoutBuilder(
+        builder: (context, box) {
+          final wide = box.maxWidth >= 860;
+          // With the on-screen keyboard up a landscape terminal has ~400dp left:
+          // drop the brand panel so the form gets the whole height.
+          final keyboardUp = MediaQuery.viewInsetsOf(context).bottom > 0;
+          final showBrand = wide && !keyboardUp;
 
-        return Row(
-          children: [
-            if (showBrand)
+          return Row(
+            children: [
+              if (showBrand) const Expanded(flex: 42, child: _BrandPanel()),
               Expanded(
-                flex: 11,
-                child: const _BrandPanel(),
-              ),
-            Expanded(
-              flex: 10,
-              child: Center(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: _form(context),
+                flex: 58,
+                child: Center(
+                  child: SingleChildScrollView(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 440),
+                      child: _form(context, compactLogo: !showBrand),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 
-  Widget _form(BuildContext context) {
+  InputDecoration _decoration({
+    required String hint,
+    required IconData icon,
+    Widget? suffix,
+  }) {
+    OutlineInputBorder border(Color color, [double width = 1]) =>
+        OutlineInputBorder(
+          borderRadius: BorderRadius.circular(16),
+          borderSide: BorderSide(color: color, width: width),
+        );
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: const TextStyle(color: KioskPalette.inkSoft, fontSize: 16),
+      prefixIcon: Icon(icon, color: _Brand.icon, size: 24),
+      suffixIcon: suffix,
+      filled: true,
+      fillColor: _Brand.field,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+      border: border(_Brand.fieldBorder),
+      enabledBorder: border(_Brand.fieldBorder),
+      disabledBorder: border(_Brand.fieldBorder),
+      focusedBorder: border(_Brand.action, 1.6),
+    );
+  }
+
+  Widget _form(BuildContext context, {required bool compactLogo}) {
     final busy = widget.busy;
     return AutofillGroup(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text('Sign in', style: Theme.of(context).textTheme.headlineMedium),
-          const SizedBox(height: 6),
+          if (compactLogo) ...[
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: _BrandLogo(dark: true),
+            ),
+            const SizedBox(height: 32),
+          ],
           const Text(
-            'Use your VibeQueue account to set up this device.',
-            style: TextStyle(color: KioskPalette.inkSoft, height: 1.35),
+            'Sign in to your workspace',
+            style: TextStyle(
+              color: _Brand.ink,
+              fontSize: 34,
+              height: 1.15,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.8,
+            ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 8),
+          const Text(
+            'Use your QueueFlow account to access this device.',
+            style: TextStyle(
+                color: KioskPalette.inkSoft, fontSize: 16, height: 1.35),
+          ),
+          const SizedBox(height: 32),
           TextField(
             controller: widget.emailController,
             enabled: !busy,
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              prefixIcon: Icon(Icons.mail_outline_rounded),
-            ),
+            decoration:
+                _decoration(hint: 'Email', icon: Icons.mail_outline_rounded),
             keyboardType: TextInputType.emailAddress,
             autofillHints: const [AutofillHints.username, AutofillHints.email],
             autocorrect: false,
@@ -106,16 +164,19 @@ class _LoginStepState extends State<LoginStep> {
           TextField(
             controller: widget.passwordController,
             enabled: !busy,
-            decoration: InputDecoration(
-              labelText: 'Password',
-              prefixIcon: const Icon(Icons.lock_outline_rounded),
+            decoration: _decoration(
+              hint: 'Password',
+              icon: Icons.lock_outline_rounded,
               // Typing on a TV remote or a kiosk keyboard is where passwords
               // go wrong; let the installer see what they typed.
-              suffixIcon: IconButton(
+              suffix: IconButton(
                 tooltip: _obscure ? 'Show password' : 'Hide password',
-                icon: Icon(_obscure
-                    ? Icons.visibility_outlined
-                    : Icons.visibility_off_outlined),
+                icon: Icon(
+                  _obscure
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                  color: _Brand.icon,
+                ),
                 onPressed: () => setState(() => _obscure = !_obscure),
               ),
             ),
@@ -131,7 +192,7 @@ class _LoginStepState extends State<LoginStep> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: KioskPalette.dangerSoft,
-                borderRadius: BorderRadius.circular(KioskPalette.radiusSm),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -147,9 +208,21 @@ class _LoginStepState extends State<LoginStep> {
               ),
             ),
           ],
-          const SizedBox(height: 20),
+          const SizedBox(height: 22),
           FilledButton(
             onPressed: busy ? null : widget.onSubmit,
+            style: FilledButton.styleFrom(
+              backgroundColor: _Brand.action,
+              disabledBackgroundColor: _Brand.action.withValues(alpha: 0.7),
+              minimumSize: const Size(0, 60),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+            ).copyWith(
+              overlayColor: WidgetStatePropertyAll(
+                _Brand.actionPressed.withValues(alpha: 0.35),
+              ),
+            ),
             child: busy
                 ? const SizedBox(
                     width: 22,
@@ -157,10 +230,20 @@ class _LoginStepState extends State<LoginStep> {
                     child: CircularProgressIndicator(
                         strokeWidth: 2.4, color: Colors.white),
                   )
-                : const Text('Sign in'),
+                : const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Sign in'),
+                      SizedBox(width: 10),
+                      Icon(Icons.arrow_forward_rounded, size: 22),
+                    ],
+                  ),
           ),
           if (widget.allowServerEdit) ...[
-            const SizedBox(height: 20),
+            const SizedBox(height: 24),
+            const Divider(color: _Brand.fieldBorder),
+            const SizedBox(height: 14),
             _serverRow(),
           ],
         ],
@@ -173,18 +256,15 @@ class _LoginStepState extends State<LoginStep> {
       return TextField(
         controller: widget.baseUrlController,
         enabled: !widget.busy,
-        decoration: const InputDecoration(
-          labelText: 'Server URL',
-          prefixIcon: Icon(Icons.dns_outlined),
-        ),
+        decoration: _decoration(hint: 'Server URL', icon: Icons.dns_outlined),
         keyboardType: TextInputType.url,
         autocorrect: false,
       );
     }
     return Row(
       children: [
-        const Icon(Icons.dns_outlined, size: 16, color: KioskPalette.inkFaint),
-        const SizedBox(width: 8),
+        const Icon(Icons.dns_outlined, size: 18, color: KioskPalette.inkFaint),
+        const SizedBox(width: 10),
         Expanded(
           child: ValueListenableBuilder<TextEditingValue>(
             valueListenable: widget.baseUrlController,
@@ -193,12 +273,17 @@ class _LoginStepState extends State<LoginStep> {
                   ? Uri.parse(v.text.trim()).host
                   : v.text.trim(),
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: KioskPalette.inkFaint, fontSize: 13),
+              style: const TextStyle(color: KioskPalette.inkSoft, fontSize: 14),
             ),
           ),
         ),
         TextButton(
           onPressed: () => setState(() => _editServer = true),
+          style: TextButton.styleFrom(
+            foregroundColor: _Brand.action,
+            textStyle:
+                const TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
+          ),
           child: const Text('Change server'),
         ),
       ],
@@ -212,82 +297,132 @@ class _BrandPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [Color(0xFF2F7662), Color(0xFF1B4D3F)],
-        ),
-      ),
+      color: _Brand.panel,
       padding: const EdgeInsets.symmetric(horizontal: 56, vertical: 48),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 64,
-            height: 64,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.16),
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: const Icon(Icons.confirmation_number_outlined,
-                color: Colors.white, size: 34),
-          ),
-          const SizedBox(height: 28),
+          const _BrandLogo(),
+          const Spacer(),
           const Text(
-            'VibeQueue',
+            'Every queue,',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 44,
-              fontWeight: FontWeight.w800,
-              letterSpacing: -1,
-              height: 1.05,
+              fontSize: 50,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -1.2,
+              height: 1.08,
             ),
           ),
-          const SizedBox(height: 12),
-          Text(
-            'One app for every queue in your business.',
+          const Text(
+            'under control.',
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.85),
-              fontSize: 19,
-              height: 1.35,
+              color: _Brand.mint,
+              fontSize: 50,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -1.2,
+              height: 1.08,
             ),
           ),
-          const SizedBox(height: 40),
-          const _Point(Icons.touch_app_outlined, 'Ticket kiosks that print'),
-          const _Point(Icons.tv_rounded, 'Boards that announce out loud'),
-          const _Point(Icons.dashboard_customize_outlined,
-              'Staff screens for every counter'),
+          const SizedBox(height: 20),
+          Text(
+            'Manage tickets, counters and displays from one place.',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.66),
+              fontSize: 18,
+              height: 1.45,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            'Kiosks  ·  Displays  ·  Counters',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.6),
+              fontSize: 14,
+            ),
+          ),
         ],
       ),
     );
   }
 }
 
-class _Point extends StatelessWidget {
-  const _Point(this.icon, this.text);
-  final IconData icon;
-  final String text;
+/// Ticket glyph + "QueueFlow" wordmark. [dark] is the compact variant shown
+/// above the form when the brand panel is hidden.
+class _BrandLogo extends StatelessWidget {
+  const _BrandLogo({this.dark = false});
+  final bool dark;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Row(
-        children: [
-          Icon(icon, color: Colors.white.withValues(alpha: 0.9), size: 22),
-          const SizedBox(width: 14),
-          Text(
-            text,
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.92),
-              fontSize: 16,
-              fontWeight: FontWeight.w500,
-            ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CustomPaint(
+          size: const Size(36, 28),
+          painter: _TicketPainter(
+            body: dark ? _Brand.panel : Colors.white,
+            dots: dark ? _Brand.canvas : _Brand.panel,
           ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 12),
+        Text.rich(
+          TextSpan(
+            text: 'Queue',
+            style: TextStyle(
+              color: dark ? _Brand.panel : Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.5,
+            ),
+            children: [
+              TextSpan(
+                text: 'Flow',
+                style: TextStyle(color: dark ? _Brand.action : _Brand.mintSoft),
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
+}
+
+/// Rounded ticket with a notch on each side and three perforation dots — the
+/// same 36×28 path as the web's `TicketMark`.
+class _TicketPainter extends CustomPainter {
+  const _TicketPainter({required this.body, required this.dots});
+  final Color body;
+  final Color dots;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.scale(size.width / 36, size.height / 28);
+    const r = Radius.circular(4);
+    const notch = Radius.circular(3.5);
+    final path = Path()
+      ..moveTo(4, 0)
+      ..lineTo(32, 0)
+      ..arcToPoint(const Offset(36, 4), radius: r)
+      ..lineTo(36, 10.5)
+      ..arcToPoint(const Offset(36, 17.5), radius: notch, clockwise: false)
+      ..lineTo(36, 24)
+      ..arcToPoint(const Offset(32, 28), radius: r)
+      ..lineTo(4, 28)
+      ..arcToPoint(const Offset(0, 24), radius: r)
+      ..lineTo(0, 17.5)
+      ..arcToPoint(const Offset(0, 10.5), radius: notch, clockwise: false)
+      ..lineTo(0, 4)
+      ..arcToPoint(const Offset(4, 0), radius: r)
+      ..close();
+    canvas.drawPath(path, Paint()..color = body);
+    final dot = Paint()..color = dots;
+    for (final y in const [7.0, 14.0, 21.0]) {
+      canvas.drawCircle(Offset(18, y), 1.7, dot);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_TicketPainter old) =>
+      old.body != body || old.dots != dots;
 }
