@@ -356,3 +356,53 @@ succeeds including the new native Kotlin plugin. Not yet run on physical hardwar
 **Not done / needs real hardware:** anything in step 5 of §8 that only a physical printer can
 confirm (actual ZY307 raster output, real USB/Bluetooth device pairing, paper-out sensor
 behaviour); the day-long soak test; Device Owner / Lock Task enrollment; release signing.
+
+## 11. Standalone app: sign-in + service picker, and the hotel vertical (2026-09-24)
+
+The product owner asked for the APK to cover the hotel / business product and hospital as
+well as school, to work **standalone** (no pairing codes), to log in, and to let the client
+simply choose what a device shows — mostly a ticket kiosk or an announcement display, with
+more hotel services to be added over time.
+
+**Supersedes §10's Pair step, provisioning QR and 6-step wizard.** Sign-in and provisioning
+already existed for school + hospital on the `queue-system-india` line; this work built the
+missing hotel side and replaced the wizard with a two-decision flow. Built on branch
+`app-standalone` (= `queue-system-india` + `main` merged).
+
+- **Flow** — sign in → *choose a service* → (printer, only for a kiosk with none) → (PIN,
+  only if none) → running. `lib/src/ui/setup/{login_step,service_step,setup_wizard}.dart`.
+  Settings → *Change what this device shows* re-opens the picker with the stored session
+  (`SetupWizard(changeMode: true)`); closing it leaves the running device untouched.
+- **Server-driven service catalog** — `lib/dal/app-services.ts` builds `AppService[]` per
+  account and `/api/app/login` + `/api/app/provision` return it as `services`. Kinds: `kiosk`
+  (branch token), `display` (screen token), `web` (a server path, opened full-screen).
+  Hotel counters (`/counter/<token>`: order, billing, kitchen, delivery, call), school windows
+  and hospital rooms are `web` services — so new hotel screens ship server-side with no APK
+  release. An unknown `kind` is dropped client-side; a server that predates the field gets
+  kiosk + display synthesised from branches/screens (`AppService.synthesize`).
+- **Create a display from the app** — `POST /api/app/screens` (`lib/dal/app-screens.ts`) makes
+  the TV screen with the same plan quota (`max_screens_per_branch`) the three web
+  create-screen actions enforce, so a fresh account needs no dashboard visit.
+- **Hotel kiosk** — bill-number keypad (hardware keyboard / wedge scanner also works; Enter
+  submits) → `POST /api/business-kiosk/[branchToken]/tickets` → `kioskAddEntryAction`, now
+  honouring `allow_self_join` and `max_capacity` like the public join page. Ticket prints via
+  the existing pipeline (business name, queue number, "Bill N"); **no QR** — the business
+  product has no public tracking page (`/track/[id]` redirects to `/display`).
+- **Hotel board** — `GET /api/business-display/[screenToken]` (wraps `get_screen_data`): now
+  serving + next up + ad rail + ticker + spoken calls. Announces `Token number N` from
+  `callCount` changes; it does **not** replicate the web board's "announce the bill number for
+  a *call*-type counter" (the packet doesn't say which counter type called).
+- **Egress** — both hotel device reads go through the version-gated cache
+  (`lib/cache/businessCache.ts`, same store as school). Every business queue mutation
+  (`lib/actions/queue.ts` via `logActivity`, and all nine inserts in `lib/actions/counters.ts`)
+  calls `publishBusinessChange(branchId)`. **A new business mutation that skips this leaves
+  the board stale for up to 30s.** Single-replica only, like the school cache.
+- **Not changed**: `/api/pair`, `device-pairing.ts` and the web pairing dialogs are left for
+  already-installed older APKs. Delete them once those are retired.
+
+**Verified**: `flutter analyze` clean, `flutter test` green (489), release APK builds,
+`next build --webpack` compiles every route, and bogus-token / no-auth curls return the
+intended 404/400/401. **Not verified**: a real sign-in and ticket issue against a hotel tenant
+(the Spice Garden demo lives on the India DB, whose credentials weren't available), and
+anything on physical hardware.
+

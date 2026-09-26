@@ -7,6 +7,7 @@ import 'package:school_kiosk/src/api/api_exception.dart';
 import 'package:school_kiosk/src/api/app_api.dart';
 import 'package:school_kiosk/src/config/auth_session.dart';
 import 'package:school_kiosk/src/config/device_vertical.dart';
+import 'package:school_kiosk/src/models/app_service.dart';
 
 class _FakeAdapter implements HttpClientAdapter {
   _FakeAdapter(this.respond);
@@ -76,7 +77,9 @@ void main() {
     expect(r.session.refreshToken, 'ref');
     expect(r.profile.vertical, DeviceVertical.hospital);
     expect(r.branches.single.branchToken, 'bt1');
-    expect(r.screensFor(r.branches.single).single.screenToken, 'st1');
+    expect(r.screens.single.screenToken, 'st1');
+    // A server that predates the service list: kiosk + display are synthesized.
+    expect(r.services.map((s) => s.id), ['kiosk:b1', 'display:s1']);
     expect(r.availableLanguages, ['en', 'mr']);
   });
 
@@ -164,6 +167,125 @@ void main() {
       throwsA(isA<ApiException>()
           .having((e) => e.statusCode, 'statusCode', 403)
           .having((e) => e.message, 'message', 'You do not have access to this branch.')),
+    );
+  });
+
+  test('login reads the server-driven services and skips kinds it does not know',
+      () async {
+    final api = AppApi(
+      baseUrl: 'https://x',
+      currentSession: () => null,
+      onSessionRefreshed: (_) async {},
+      dio: _dio((o) async => _json({
+            'session': {'accessToken': 'a', 'refreshToken': 'r', 'expiresAt': 1893456000},
+            'profile': {
+              'vertical': 'business',
+              'role': 'admin',
+              'customerName': 'Spice Garden',
+              'fullName': 'Op',
+              'email': 'op@x.com',
+            },
+            'branches': [
+              {'id': 'b1', 'name': 'Main', 'branchToken': 'bt1'},
+            ],
+            'screens': const [],
+            'services': [
+              {
+                'id': 'counter:c1',
+                'kind': 'web',
+                'group': 'staff',
+                'branchId': 'b1',
+                'title': 'Kitchen',
+                'description': 'Kitchen display for the prep queue.',
+                'icon': 'kitchen',
+                'token': '',
+                'path': '/counter/abc',
+              },
+              {'id': 'x', 'kind': 'hologram', 'title': 'Future'},
+            ],
+            'availableLanguages': ['en'],
+          }, 200)),
+    );
+
+    final r = await api.login(email: 'op@x.com', password: 'secret');
+    final s = r.services.single;
+    expect(s.kind, AppServiceKind.web);
+    expect(s.group, AppServiceGroup.staff);
+    expect(s.webUrl('https://host.test/'), 'https://host.test/counter/abc');
+  });
+
+  test('business against a server with no service list yields nothing to pick',
+      () async {
+    final api = AppApi(
+      baseUrl: 'https://x',
+      currentSession: () => null,
+      onSessionRefreshed: (_) async {},
+      dio: _dio((o) async => _json({
+            'session': {'accessToken': 'a', 'refreshToken': 'r', 'expiresAt': 1893456000},
+            'profile': {
+              'vertical': 'business',
+              'role': 'admin',
+              'customerName': 'x',
+              'fullName': 'x',
+              'email': 'x@x.com',
+            },
+            'branches': [
+              {'id': 'b1', 'name': 'Main', 'branchToken': 'bt1'},
+            ],
+            'screens': const [],
+            'availableLanguages': ['en'],
+          }, 200)),
+    );
+    final r = await api.login(email: 'x@x.com', password: 'secret');
+    expect(r.services, isEmpty);
+  });
+
+  test('createDisplay posts branchId + name and returns the display service',
+      () async {
+    RequestOptions? seen;
+    final api = AppApi(
+      baseUrl: 'https://x',
+      currentSession: () => _session(),
+      onSessionRefreshed: (_) async {},
+      dio: _dio((o) async {
+        seen = o;
+        return _json({
+          'service': {
+            'id': 'display:s9',
+            'kind': 'display',
+            'group': 'customer',
+            'branchId': 'b1',
+            'title': 'Patio TV',
+            'description': 'd',
+            'icon': 'display',
+            'token': 'st9',
+            'path': '',
+          },
+        }, 200);
+      }),
+    );
+
+    final s = await api.createDisplay(branchId: 'b1', name: 'Patio TV');
+    expect(seen!.path, '/screens');
+    expect(seen!.headers['authorization'], 'Bearer a1');
+    expect((seen!.data as Map)['name'], 'Patio TV');
+    expect(s.token, 'st9');
+    expect(s.role.name, 'display');
+  });
+
+  test('createDisplay surfaces the plan-limit message', () async {
+    final api = AppApi(
+      baseUrl: 'https://x',
+      currentSession: () => _session(),
+      onSessionRefreshed: (_) async {},
+      dio: _dio((o) async => _json({
+            'error': 'You have reached the maximum number of screens (2) for this branch on your plan.',
+          }, 400)),
+    );
+    expect(
+      () => api.createDisplay(branchId: 'b1', name: 'Third'),
+      throwsA(isA<ApiException>()
+          .having((e) => e.message, 'message', contains('maximum number of screens'))),
     );
   });
 }

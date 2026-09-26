@@ -20,6 +20,7 @@ export async function GET(request: NextRequest) {
     profile: prov.profile,
     branches: prov.branches,
     screens: prov.screens,
+    services: prov.services,
     availableLanguages: prov.availableLanguages,
   })
 }

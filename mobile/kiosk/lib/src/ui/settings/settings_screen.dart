@@ -10,6 +10,7 @@ import '../../config/device_vertical.dart';
 import '../../state/app_auth_providers.dart';
 import '../../state/providers.dart';
 import '../setup/pin_step.dart';
+import '../setup/setup_wizard.dart';
 import '../setup/printer_setup_step.dart';
 import '../theme.dart';
 import 'tenant_settings_form.dart';
@@ -161,22 +162,29 @@ class _DeviceSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return _Section(
-      title: 'Device',
+      title: 'This device',
       icon: Icons.devices_other_outlined,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _kv('Role', cfg.role?.label ?? '—'),
+          _kv('Showing',
+              cfg.serviceTitle.isNotEmpty ? cfg.serviceTitle : (cfg.role?.label ?? '—')),
+          _kv('Type', cfg.role?.label ?? '—'),
           _kv('Product', cfg.vertical.label),
-          if (cfg.role == DeviceRole.web)
-            _kv('Page', cfg.webUrl)
-          else
-            _kv('Facility token', cfg.branchToken.isEmpty ? '—' : 'set'),
-          const SizedBox(height: 12),
-          const Text(
-            'To change the facility or role, re-provision the device from '
-            'Advanced below.',
-            style: TextStyle(color: KioskPalette.inkSoft, fontSize: 13),
+          if (cfg.role == DeviceRole.web) _kv('Page', cfg.webUrl),
+          const SizedBox(height: 14),
+          FilledButton.icon(
+            icon: const Icon(Icons.swap_horiz_rounded),
+            label: const Text('Change what this device shows'),
+            // Opens the same "choose a service" screen as first-run, but leaves
+            // the running device alone until a new service is actually picked —
+            // closing it keeps everything as it was.
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                fullscreenDialog: true,
+                builder: (_) => const SetupWizard(changeMode: true),
+              ),
+            ),
           ),
         ],
       ),
@@ -433,8 +441,8 @@ class _AdvancedSection extends ConsumerWidget {
             label: const Text('Re-provision device'),
             onPressed: () async {
               final ok = await _confirm(context, 'Re-provision?',
-                  'Signs out and returns to setup so you can pick a server, '
-                  'sign in, and choose a facility again.');
+                  'Signs out and returns to the sign-in screen. Use this to move '
+                  'the device to a different account or server.');
               if (ok && context.mounted) {
                 await deprovision(ref);
                 if (context.mounted) {

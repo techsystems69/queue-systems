@@ -5,492 +5,509 @@ import '../../api/api_exception.dart';
 import '../../api/app_api.dart';
 import '../../config/app_config.dart';
 import '../../config/device_config.dart';
-import '../../config/device_role.dart';
-import '../../config/device_vertical.dart';
+import '../../models/app_service.dart';
 import '../../printing/printer_settings.dart';
 import '../../state/app_auth_providers.dart';
 import '../../state/providers.dart';
 import '../theme.dart';
-import 'facility_step.dart';
 import 'login_step.dart';
 import 'pin_step.dart';
 import 'printer_setup_step.dart';
+import 'service_step.dart';
 
-/// One-time device provisioning: server → sign in → role → facility → (kiosk
-/// only) printer → admin PIN → review. Staff-only; a visitor never sees this
-/// after the device is locked. Re-entered later only through [AdminGate], which
-/// now opens the dedicated Settings screen — this wizard is first-run and full
-/// re-provision only.
+enum _Step { signIn, service, printer, pin }
+
+/// Everything the flow needs from the server, however it got it (a fresh sign-in
+/// or a re-fetch with a stored session).
+class _Catalog {
+  _Catalog({
+    required this.profile,
+    required this.branches,
+    required this.services,
+  });
+  final AppProfileSummary profile;
+  final List<AppBranch> branches;
+  final List<AppService> services;
+}
+
+/// Device setup, in as few steps as the situation allows:
+///
+///   sign in → **choose a service** → (printer, kiosks with none yet) → (PIN,
+///   devices with none yet) → running.
+///
+/// There is no pairing code and no role/facility wizard: the account's tenant
+/// decides the product, and the server's service catalog decides what the device
+/// can become. A device that already has a printer and PIN goes straight from the
+/// choice to running.
+///
+/// With [changeMode] (opened from Settings) it starts at the choice using the
+/// stored session, leaves the running device untouched until a new service is
+/// actually picked, and can be closed to keep things as they were.
 class SetupWizard extends ConsumerStatefulWidget {
-  const SetupWizard({super.key});
+  const SetupWizard({super.key, this.changeMode = false});
+  final bool changeMode;
 
   @override
   ConsumerState<SetupWizard> createState() => _SetupWizardState();
 }
 
 class _SetupWizardState extends ConsumerState<SetupWizard> {
-  final _pageController = PageController();
-  int _step = 0;
+  final _baseUrl = TextEditingController();
+  final _email = TextEditingController();
+  final _password = TextEditingController();
 
-  final _baseUrlController = TextEditingController(text: AppConfig.defaultBaseUrl);
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _webUrlController = TextEditingController();
-
-  AppLoginResult? _login;
-  AppBranch? _branch;
-  AppScreen? _screen;
-
-  DeviceRole? _role;
-  PrinterSettings _printer = const PrinterSettings();
+  late final DeviceConfig _initial;
+  late PrinterSettings _printer;
   String? _pinHash;
   String? _pinSalt;
-  int _pinLength = 4;
+  late int _pinLength;
 
-  bool _loggingIn = false;
-  String? _loginError;
+  _Catalog? _catalog;
+  _Step _step = _Step.signIn;
+  AppService? _service;
 
-  DeviceVertical get _vertical =>
-      _login?.profile.vertical ?? DeviceVertical.business;
+  /// Resolving a stored session before deciding which screen to open.
+  bool _booting = true;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _initial = ref.read(deviceConfigProvider).requireValue;
+    _baseUrl.text = _initial.baseUrl.isEmpty ? AppConfig.defaultBaseUrl : _initial.baseUrl;
+    _printer = _initial.printer;
+    _pinHash = _initial.adminPinHash;
+    _pinSalt = _initial.adminPinSalt;
+    _pinLength = _initial.adminPinLength;
+    _resumeSession();
+  }
 
   @override
   void dispose() {
-    _pageController.dispose();
-    _baseUrlController.dispose();
-    _emailController.dispose();
-    _passwordController.dispose();
-    _webUrlController.dispose();
+    _baseUrl.dispose();
+    _email.dispose();
+    _password.dispose();
     super.dispose();
   }
 
-  List<_Step> get _steps => [
-        _Step('Server', Icons.dns_outlined),
-        _Step('Sign in', Icons.login_rounded),
-        _Step('Role', Icons.dashboard_customize_outlined),
-        _Step('Facility', Icons.place_outlined),
-        if (_role == DeviceRole.kiosk) _Step('Printer', Icons.print_outlined),
-        _Step('PIN', Icons.pin_outlined),
-        _Step('Review', Icons.check_circle_outline),
+  /// A stored session means the operator already signed in on this device:
+  /// fetch the catalog with it and skip the password. Any failure (expired,
+  /// offline) just lands on the sign-in screen — never a dead end.
+  Future<void> _resumeSession() async {
+    try {
+      final session = await ref.read(authSessionProvider.future);
+      if (session != null) {
+        final p = await ref.read(appApiProvider).provision();
+        if (!mounted) return;
+        setState(() {
+          _catalog = _Catalog(
+            profile: p.profile,
+            branches: p.branches,
+            services: p.services,
+          );
+          _step = _Step.service;
+        });
+      }
+    } catch (_) {
+      // fall through to sign-in
+    }
+    if (mounted) setState(() => _booting = false);
+  }
+
+  // ── flow ────────────────────────────────────────────────────
+
+  bool get _needsPrinter =>
+      _service?.kind == AppServiceKind.kiosk && !_initial.printer.isConfigured;
+  bool get _needsPin => !_initial.hasPin;
+
+  List<_Step> get _flow => [
+        _Step.signIn,
+        _Step.service,
+        if (_needsPrinter) _Step.printer,
+        if (_needsPin) _Step.pin,
       ];
 
-  bool get _canGoNext {
-    switch (_steps[_step].label) {
-      case 'Server':
-        return _baseUrlController.text.trim().isNotEmpty;
-      case 'Sign in':
-        return _login != null;
-      case 'Role':
-        return _role != null;
-      case 'Facility':
-        if (_role == DeviceRole.web) {
-          return _webUrlController.text.trim().isNotEmpty;
-        }
-        if (_role == DeviceRole.display) {
-          return _branch != null && _screen != null;
-        }
-        return _branch != null;
-      case 'Printer':
-        return true; // skippable
-      case 'PIN':
-        return _pinHash != null;
-      default:
-        return true;
-    }
-  }
+  bool get _isLast => _flow.last == _step;
 
-  Future<void> _doLogin() async {
-    setState(() {
-      _loggingIn = true;
-      _loginError = null;
-    });
-    // A transient client on the URL typed one step ago — the saved
-    // DeviceConfig.baseUrl (which appApiProvider reads) isn't updated until the
-    // device is locked.
-    final api = ref.read(appApiFactoryProvider)(_baseUrlController.text.trim());
-    try {
-      final result = await api.login(
-        email: _emailController.text,
-        password: _passwordController.text,
-      );
-      setState(() {
-        _login = result;
-        // Re-login may point at a different tenant — drop stale picks.
-        _branch = null;
-        _screen = null;
-        _loggingIn = false;
-      });
-    } on ApiException catch (e) {
-      setState(() {
-        _loginError = e.message;
-        _loggingIn = false;
-      });
-    } catch (_) {
-      setState(() {
-        _loginError = 'Could not reach the server.';
-        _loggingIn = false;
-      });
+  void _advance() {
+    if (_isLast) {
+      _finish();
+      return;
     }
-  }
-
-  void _next() {
-    if (_step < _steps.length - 1) {
-      setState(() => _step++);
-      _pageController.animateToPage(_step,
-          duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
-    } else {
-      _lockDevice();
-    }
+    setState(() => _step = _flow[_flow.indexOf(_step) + 1]);
   }
 
   void _back() {
-    if (_step == 0) return;
-    setState(() => _step--);
-    _pageController.animateToPage(_step,
-        duration: const Duration(milliseconds: 260), curve: Curves.easeOut);
+    final i = _flow.indexOf(_step);
+    if (i > _flow.indexOf(_Step.service)) setState(() => _step = _flow[i - 1]);
   }
 
-  Future<void> _lockDevice() async {
-    final login = _login;
-    if (login == null) return;
-    final config = DeviceConfig(
-      baseUrl: _baseUrlController.text.trim(),
-      role: _role,
-      vertical: login.profile.vertical,
-      setupComplete: true,
-      branchToken: _role == DeviceRole.kiosk ? (_branch?.branchToken ?? '') : '',
-      branchId: _role == DeviceRole.web ? '' : (_branch?.id ?? ''),
-      screenToken: _role == DeviceRole.display ? (_screen?.screenToken ?? '') : '',
-      webUrl: _role == DeviceRole.web ? _webUrlController.text.trim() : '',
-      adminPinHash: _pinHash,
-      adminPinSalt: _pinSalt,
-      adminPinLength: _pinLength,
-      printer: _printer,
-    );
-    await ref.read(deviceConfigProvider.notifier).save(config);
-    await ref.read(authSessionProvider.notifier).signIn(login);
+  void _select(AppService s) {
+    setState(() => _service = s);
+    _advance();
+  }
+
+  bool get _canAdvance => switch (_step) {
+        _Step.pin => _pinHash != null,
+        _ => true,
+      };
+
+  String get _startLabel => switch (_service?.kind) {
+        AppServiceKind.kiosk => 'Start kiosk',
+        AppServiceKind.display => 'Start display',
+        _ => 'Open screen',
+      };
+
+  // ── actions ─────────────────────────────────────────────────
+
+  Future<void> _login() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final url = _baseUrl.text.trim();
+    // A transient client on the URL typed a moment ago: the saved
+    // DeviceConfig.baseUrl (which appApiProvider reads) isn't updated until the
+    // sign-in has actually worked.
+    final api = ref.read(appApiFactoryProvider)(url);
+    try {
+      final result = await api.login(email: _email.text, password: _password.text);
+      await ref.read(authSessionProvider.notifier).signIn(result);
+      // Persist the server now: creating a display and every later call go
+      // through appApiProvider, which reads it from the saved config.
+      final cfg = ref.read(deviceConfigProvider).requireValue;
+      await ref.read(deviceConfigProvider.notifier).save(cfg.copyWith(baseUrl: url));
+      if (!mounted) return;
+      _password.clear();
+      setState(() {
+        _catalog = _Catalog(
+          profile: result.profile,
+          branches: result.branches,
+          services: result.services,
+        );
+        _service = null;
+        _step = _Step.service;
+        _busy = false;
+      });
+    } on ApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.message;
+          _busy = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _error = 'Could not reach the server.';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  Future<AppService> _createDisplay(AppBranch branch, String name) async {
+    final service =
+        await ref.read(appApiProvider).createDisplay(branchId: branch.id, name: name);
+    if (mounted) setState(() => _catalog?.services.add(service));
+    return service;
+  }
+
+  Future<void> _useDifferentAccount() async {
+    await ref.read(authSessionProvider.notifier).signOut();
+    if (!mounted) return;
+    setState(() {
+      _catalog = null;
+      _service = null;
+      _error = null;
+      _step = _Step.signIn;
+    });
+  }
+
+  Future<void> _finish() async {
+    final svc = _service;
+    final catalog = _catalog;
+    if (svc == null || catalog == null) return;
+    final base = _baseUrl.text.trim();
+    final cfg = ref.read(deviceConfigProvider).requireValue;
+    await ref.read(deviceConfigProvider.notifier).save(cfg.copyWith(
+          baseUrl: base,
+          role: svc.role,
+          vertical: catalog.profile.vertical,
+          setupComplete: true,
+          branchToken: svc.kind == AppServiceKind.kiosk ? svc.token : '',
+          branchId: svc.branchId,
+          screenToken: svc.kind == AppServiceKind.display ? svc.token : '',
+          webUrl: svc.kind == AppServiceKind.web ? svc.webUrl(base) : '',
+          adminPinHash: _pinHash,
+          adminPinSalt: _pinSalt,
+          adminPinLength: _pinLength,
+          printer: _printer,
+          serviceId: svc.id,
+          serviceTitle: svc.title,
+        ));
     if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
   }
 
+  // ── build ───────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    final steps = _steps;
+    if (_booting) {
+      return const Scaffold(
+        backgroundColor: KioskPalette.bg,
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_step == _Step.signIn) {
+      return Scaffold(
+        backgroundColor: KioskPalette.surface,
+        body: LoginStep(
+          emailController: _email,
+          passwordController: _password,
+          baseUrlController: _baseUrl,
+          busy: _busy,
+          error: _error,
+          onSubmit: _login,
+          allowServerEdit: !widget.changeMode,
+        ),
+      );
+    }
+
+    final catalog = _catalog!;
+    final stepper = _flow.where((s) => s != _Step.signIn).toList();
+    final showBottom = _step != _Step.service;
+
     return Scaffold(
       backgroundColor: KioskPalette.bg,
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
         child: Column(
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(28, 20, 28, 8),
-              child: Row(
-                children: [
-                  for (var i = 0; i < steps.length; i++) ...[
-                    _StepDot(step: steps[i], active: i == _step, done: i < _step),
-                    if (i != steps.length - 1)
-                      Expanded(
-                        child: Container(
-                          height: 2,
-                          color: i < _step ? KioskPalette.primary : KioskPalette.border,
-                        ),
-                      ),
-                  ],
-                ],
-              ),
+            _TopBar(
+              steps: stepper,
+              current: _step,
+              account: catalog.profile.email,
+              onDifferentAccount:
+                  widget.changeMode ? null : _useDifferentAccount,
+              onClose: widget.changeMode
+                  ? () => Navigator.of(context).pop()
+                  : null,
             ),
             Expanded(
-              child: PageView(
-                controller: _pageController,
-                physics: const NeverScrollableScrollPhysics(),
-                children: [
-                  _pad(_ServerStep(
-                      controller: _baseUrlController,
-                      onChanged: () => setState(() {}))),
-                  _pad(LoginStep(
-                    emailController: _emailController,
-                    passwordController: _passwordController,
-                    busy: _loggingIn,
-                    error: _loginError,
-                    signedInAs: _login == null
-                        ? null
-                        : '${_login!.profile.email} · ${_login!.profile.customerName}',
-                    onSubmit: _doLogin,
-                  )),
-                  _pad(_RoleStep(
-                      value: _role,
-                      onChanged: (r) => setState(() {
-                            if (r != _role) {
-                              _branch = null;
-                              _screen = null;
-                            }
-                            _role = r;
-                          }))),
-                  _pad(FacilityStep(
-                    role: _role,
-                    login: _login,
-                    branch: _branch,
-                    screen: _screen,
-                    webUrlController: _webUrlController,
-                    onBranch: (b) => setState(() {
-                      _branch = b;
-                      _screen = null;
-                    }),
-                    onScreen: (s) => setState(() => _screen = s),
-                  )),
-                  if (_role == DeviceRole.kiosk)
-                    _pad(PrinterSetupStep(
-                      value: _printer,
-                      onChanged: (p) => setState(() => _printer = p),
-                    )),
-                  _pad(PinSetupStep(
-                    length: _pinLength,
-                    onLengthChanged: (l) => setState(() => _pinLength = l),
-                    onPinCreated: (hash, salt) => setState(() {
-                      _pinHash = hash;
-                      _pinSalt = salt;
-                    }),
-                    alreadySet: _pinHash != null,
-                  )),
-                  _pad(_ReviewStep(
-                    baseUrl: _baseUrlController.text,
-                    role: _role,
-                    vertical: _vertical,
-                    facility: _role == DeviceRole.web
-                        ? _webUrlController.text
-                        : _role == DeviceRole.display
-                            ? '${_branch?.name ?? '—'} · ${_screen?.name ?? '—'}'
-                            : (_branch?.name ?? '—'),
-                    printer: _printer,
-                  )),
-                ],
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(28, 8, 28, 24),
-              child: Row(
-                children: [
-                  if (_step > 0)
-                    OutlinedButton(onPressed: _back, child: const Text('Back'))
-                  else
-                    const SizedBox.shrink(),
-                  const Spacer(),
-                  FilledButton(
-                    onPressed: _canGoNext ? _next : null,
-                    child: Text(
-                        _step == steps.length - 1 ? 'Lock this device' : 'Next'),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: KeyedSubtree(
+                    key: ValueKey(_step),
+                    child: _content(catalog),
                   ),
-                ],
+                ),
               ),
             ),
+            if (showBottom)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(32, 8, 32, 22),
+                child: Row(
+                  children: [
+                    OutlinedButton(onPressed: _back, child: const Text('Back')),
+                    const Spacer(),
+                    FilledButton(
+                      onPressed: _canAdvance ? _advance : null,
+                      child: Text(_isLast ? _startLabel : 'Next'),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _pad(Widget child) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 28),
-        child: child,
-      );
+  Widget _content(_Catalog catalog) {
+    switch (_step) {
+      case _Step.service:
+        return ServicePickerStep(
+          customerName: catalog.profile.customerName,
+          vertical: catalog.profile.vertical,
+          branches: catalog.branches,
+          services: catalog.services,
+          currentServiceId: _initial.serviceId,
+          onSelect: _select,
+          onCreateDisplay: _createDisplay,
+        );
+      case _Step.printer:
+        return PrinterSetupStep(
+          value: _printer,
+          onChanged: (p) => setState(() => _printer = p),
+        );
+      case _Step.pin:
+        return PinSetupStep(
+          length: _pinLength,
+          onLengthChanged: (l) => setState(() => _pinLength = l),
+          onPinCreated: (hash, salt) => setState(() {
+            _pinHash = hash;
+            _pinSalt = salt;
+          }),
+          alreadySet: _pinHash != null,
+        );
+      case _Step.signIn:
+        return const SizedBox.shrink();
+    }
+  }
 }
 
-class _Step {
-  const _Step(this.label, this.icon);
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.steps,
+    required this.current,
+    required this.account,
+    required this.onDifferentAccount,
+    required this.onClose,
+  });
+
+  final List<_Step> steps;
+  final _Step current;
+  final String account;
+  final VoidCallback? onDifferentAccount;
+  final VoidCallback? onClose;
+
+  static String _label(_Step s) => switch (s) {
+        _Step.signIn => 'Sign in',
+        _Step.service => 'Service',
+        _Step.printer => 'Printer',
+        _Step.pin => 'PIN',
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final currentIndex = steps.indexOf(current);
+    final stepper = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < steps.length; i++) ...[
+          _StepPill(
+            label: _label(steps[i]),
+            index: i + 1,
+            active: i == currentIndex,
+            done: i < currentIndex,
+          ),
+          if (i != steps.length - 1)
+            Container(
+              width: 22,
+              height: 2,
+              margin: const EdgeInsets.symmetric(horizontal: 6),
+              color: i < currentIndex ? KioskPalette.primary : KioskPalette.border,
+            ),
+        ],
+      ],
+    );
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(32, 14, 20, 14),
+      decoration: const BoxDecoration(
+        color: KioskPalette.surface,
+        border: Border(bottom: BorderSide(color: KioskPalette.border)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, c) {
+          // On a 1024dp panel or narrower the title gives way first, then the
+          // account line; the stepper shrinks rather than overflow.
+          final showTitle = c.maxWidth >= 900;
+          final showAccount = c.maxWidth >= 700;
+          return Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: KioskPalette.primary,
+                  borderRadius: BorderRadius.circular(11),
+                ),
+                child: const Icon(Icons.confirmation_number_outlined,
+                    color: Colors.white, size: 20),
+              ),
+              if (showTitle) ...[
+                const SizedBox(width: 12),
+                const Text('Set up this device',
+                    style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+              ],
+              const SizedBox(width: 24),
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: AlignmentDirectional.centerStart,
+                  child: stepper,
+                ),
+              ),
+              const Spacer(),
+              if (showAccount)
+                Flexible(
+                  child: Text(account,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: KioskPalette.inkSoft, fontSize: 14)),
+                ),
+              if (onDifferentAccount != null)
+                TextButton(
+                    onPressed: onDifferentAccount,
+                    child: const Text('Switch account')),
+              if (onClose != null)
+                IconButton(
+                  tooltip: 'Keep the current setup',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: onClose,
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _StepPill extends StatelessWidget {
+  const _StepPill({
+    required this.label,
+    required this.index,
+    required this.active,
+    required this.done,
+  });
   final String label;
-  final IconData icon;
-}
-
-class _StepDot extends StatelessWidget {
-  const _StepDot({required this.step, required this.active, required this.done});
-  final _Step step;
+  final int index;
   final bool active;
   final bool done;
 
   @override
   Widget build(BuildContext context) {
-    final color = active || done ? KioskPalette.primary : KioskPalette.inkFaint;
-    return Column(
+    final on = active || done;
+    return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         CircleAvatar(
-          radius: 16,
+          radius: 12,
           backgroundColor: active
               ? KioskPalette.primary
               : (done ? KioskPalette.primarySoft : KioskPalette.surfaceMuted),
-          child: Icon(done ? Icons.check : step.icon,
-              size: 16, color: active ? Colors.white : color),
+          child: done
+              ? const Icon(Icons.check, size: 14, color: KioskPalette.primary)
+              : Text('$index',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: active ? Colors.white : KioskPalette.inkFaint)),
         ),
+        const SizedBox(width: 8),
+        Text(label,
+            style: TextStyle(
+                fontSize: 14,
+                fontWeight: active ? FontWeight.w700 : FontWeight.w500,
+                color: on ? KioskPalette.ink : KioskPalette.inkFaint)),
       ],
     );
   }
-}
-
-class _ServerStep extends StatelessWidget {
-  const _ServerStep({required this.controller, required this.onChanged});
-  final TextEditingController controller;
-  final VoidCallback onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      children: [
-        const SizedBox(height: 8),
-        Text('Server', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 6),
-        const Text('The VibeQueue deployment this device talks to.',
-            style: TextStyle(color: KioskPalette.inkSoft)),
-        const SizedBox(height: 24),
-        TextField(
-          controller: controller,
-          decoration: const InputDecoration(labelText: 'Server URL'),
-          keyboardType: TextInputType.url,
-          autocorrect: false,
-          onChanged: (_) => onChanged(),
-        ),
-      ],
-    );
-  }
-}
-
-class _RoleStep extends StatelessWidget {
-  const _RoleStep({required this.value, required this.onChanged});
-  final DeviceRole? value;
-  final ValueChanged<DeviceRole> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      children: [
-        const SizedBox(height: 8),
-        Text('What is this screen?',
-            style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 6),
-        const Text('This choice is locked once the device is set up.',
-            style: TextStyle(color: KioskPalette.inkSoft)),
-        const SizedBox(height: 20),
-        for (final role in DeviceRole.values)
-          _RoleCard(
-              role: role,
-              selected: value == role,
-              onTap: () => onChanged(role)),
-      ],
-    );
-  }
-}
-
-class _RoleCard extends StatelessWidget {
-  const _RoleCard(
-      {required this.role, required this.selected, required this.onTap});
-  final DeviceRole role;
-  final bool selected;
-  final VoidCallback onTap;
-
-  IconData get _icon => switch (role) {
-        DeviceRole.kiosk => Icons.confirmation_number_outlined,
-        DeviceRole.display => Icons.tv_outlined,
-        DeviceRole.web => Icons.public_outlined,
-      };
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      color: selected ? KioskPalette.primarySoft : KioskPalette.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-            color: selected ? KioskPalette.primary : KioskPalette.border),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(18),
-          child: Row(
-            children: [
-              CircleAvatar(
-                backgroundColor: selected
-                    ? KioskPalette.primary
-                    : KioskPalette.surfaceMuted,
-                child: Icon(_icon,
-                    color: selected ? Colors.white : KioskPalette.inkSoft),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(role.label,
-                        style: const TextStyle(
-                            fontWeight: FontWeight.w700, fontSize: 16)),
-                    const SizedBox(height: 2),
-                    Text(role.description,
-                        style: const TextStyle(color: KioskPalette.inkSoft)),
-                  ],
-                ),
-              ),
-              if (selected)
-                const Icon(Icons.check_circle, color: KioskPalette.primary),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ReviewStep extends StatelessWidget {
-  const _ReviewStep({
-    required this.baseUrl,
-    required this.role,
-    required this.vertical,
-    required this.facility,
-    required this.printer,
-  });
-
-  final String baseUrl;
-  final DeviceRole? role;
-  final DeviceVertical vertical;
-  final String facility;
-  final PrinterSettings printer;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      children: [
-        const SizedBox(height: 8),
-        Text('Review', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 20),
-        _row('Server', baseUrl),
-        _row('Product', vertical.label),
-        _row('Role', role?.label ?? '—'),
-        _row(role == DeviceRole.web ? 'Page' : 'Facility', facility),
-        if (role == DeviceRole.kiosk)
-          _row(
-              'Printer',
-              printer.isConfigured
-                  ? '${printer.transport.label} · ${printer.paper.label}'
-                  : 'Not configured'),
-        const SizedBox(height: 20),
-        const Text(
-          'Locking this device hides setup behind a hidden gesture and PIN. '
-          'You can always come back in.',
-          style: TextStyle(color: KioskPalette.inkSoft),
-        ),
-      ],
-    );
-  }
-
-  Widget _row(String label, String value) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          children: [
-            SizedBox(
-                width: 90,
-                child: Text(label,
-                    style: const TextStyle(color: KioskPalette.inkSoft))),
-            Expanded(
-                child: Text(value,
-                    style: const TextStyle(fontWeight: FontWeight.w600))),
-          ],
-        ),
-      );
 }

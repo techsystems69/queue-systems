@@ -6,6 +6,7 @@ import { createSupabaseServiceClient } from '@/lib/db/server'
 import { requireBranchManager } from '@/lib/dal/session'
 import { hasActiveKitchenCounter } from '@/lib/dal/counters'
 import { toQueueEntryDTO, toCounterDTO, type CounterDTO, type QueueEntryDTO, type DbCounter, type DbQueueEntry, type DbQueueState, type CounterType } from '@/lib/db/types'
+import { publishBusinessChange } from '@/lib/cache/businessCache'
 
 // ── Token auth helper ─────────────────────────────────────────
 async function verifyCounterToken(token: string) {
@@ -58,6 +59,7 @@ async function releaseStrandedKitchenEntries(
       bill_number: '-',
       message: `Kitchen went offline — ${released.length} order${released.length > 1 ? 's' : ''} bypassed straight to ready`,
     })
+    publishBusinessChange(branchId)
   }
 }
 
@@ -143,6 +145,7 @@ export async function counterToggleAcceptingOrdersAction(
       bill_number: '-',
       message: 'Kitchen marked offline from console — new orders will skip prep',
     })
+    publishBusinessChange(counter.branch_id)
     await releaseStrandedKitchenEntries(supabase, counter.branch_id, counter.customer_id)
   }
 
@@ -189,6 +192,7 @@ export async function counterUpdateKitchenStatusAction(
     bill_number: entryRow.bill_number,
     message: `Queue #${entryRow.queue_number} kitchen: ${newStatus}`,
   })
+  publishBusinessChange(branchId)
 
   return {}
 }
@@ -238,6 +242,7 @@ export async function counterCallNextAction(
         bill_number: cur.bill_number,
         message: `Queue #${cur.queue_number} completed via counter`,
       })
+      publishBusinessChange(branchId)
     }
   }
 
@@ -281,6 +286,7 @@ export async function counterCallNextAction(
     bill_number: next.bill_number,
     message: `Queue #${next.queue_number} called via ${counter.type} counter`,
   })
+  publishBusinessChange(branchId)
 
   return {}
 }
@@ -378,6 +384,7 @@ export async function counterCallEntryAction(
       ? `Queue #${entry.queue_number} recalled via ${counter.type} counter (×${newCallCount})`
       : `Queue #${entry.queue_number} called via ${counter.type} counter`,
   })
+  publishBusinessChange(branchId)
 
   return {}
 }
@@ -420,6 +427,7 @@ export async function counterCompleteEntryAction(
     bill_number: entry.bill_number,
     message: `Queue #${entry.queue_number} completed via counter`,
   })
+  publishBusinessChange(branchId)
 
   return {}
 }
@@ -492,6 +500,7 @@ export async function counterCreateEntryAction(
     bill_number: billNumber.trim(),
     message: `Queue #${queueNumber} joined — Bill ${billNumber.trim()} (${counter.type} counter)`,
   })
+  publishBusinessChange(branchId)
 
   revalidatePath('/dashboard')
   revalidatePath(`/branches/${branchId}`)
@@ -531,6 +540,7 @@ export async function counterCancelEntryAction(
     bill_number: entryRow.bill_number,
     message: `Queue #${entryRow.queue_number} cancelled via counter`,
   })
+  publishBusinessChange(branchId)
 
   return {}
 }

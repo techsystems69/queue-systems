@@ -11,6 +11,7 @@ import {
 } from '@/lib/dal/queue'
 import { toQueueEntryDTO, type QueueEntryDTO, type ActivityLogDTO, type DbQueueEntry, type DbQueueState } from '@/lib/db/types'
 import { hasActiveKitchenCounter } from '@/lib/dal/counters'
+import { publishBusinessChange } from '@/lib/cache/businessCache'
 
 export interface QueueActionResult {
   error?: string
@@ -66,6 +67,9 @@ async function logActivity(
     bill_number: billNumber,
     message,
   })
+  // Every queue mutation logs through here, which makes it the one place the
+  // native board/kiosk cache (lib/cache/businessCache.ts) needs to hear about.
+  publishBusinessChange(branchId)
 }
 
 async function verifyBranchAccess(
@@ -211,6 +215,7 @@ export async function publicJoinAction(
 
   if (error || !data) return { error: 'Failed to join queue' }
 
+  publishBusinessChange(parsed.data.branchId)
   return { entry: toQueueEntryDTO(data as DbQueueEntry) }
 }
 
@@ -232,6 +237,21 @@ export async function kioskAddEntryAction(
     .single()
 
   if (!branch || !branch.is_active) return { error: 'Branch not found' }
+  // The kiosk is self-service, so it honours the same switches the public join
+  // page does: a branch that turned self-join off is staff-entry only, and a
+  // full queue stops taking numbers instead of printing one nobody can serve.
+  if (!branch.allow_self_join) {
+    return { error: 'Self-service ticketing is off for this branch. Please see the counter staff.' }
+  }
+
+  const { count } = await supabase
+    .from('queue_entries')
+    .select('*', { count: 'exact', head: true })
+    .eq('branch_id', branch.id)
+    .in('status', ['waiting', 'in-progress'])
+  if ((count ?? 0) >= (branch.max_capacity ?? 100)) {
+    return { error: 'The queue is full right now. Please see the counter staff.' }
+  }
 
   const { data: numData, error: numErr } = await supabase.rpc('claim_queue_number', {
     p_branch_id: branch.id,
@@ -577,6 +597,7 @@ export async function callPreviousAction(branchId: string): Promise<{ error?: st
   }
 
   await Promise.all(ops)
+  publishBusinessChange(branchId)
 
   revalidatePath('/dashboard')
   revalidatePath(`/branches/${branchId}`)

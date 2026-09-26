@@ -7,6 +7,8 @@ import '../config/device_vertical.dart';
 import '../printing/ticket_capture_host.dart';
 import '../state/providers.dart';
 import 'admin/admin_gate.dart';
+import 'business/business_board_screen.dart';
+import 'business/business_kiosk_screen.dart';
 import 'display/board_screen.dart';
 import 'hospital/hospital_board_screen.dart';
 import 'hospital/hospital_kiosk_screen.dart';
@@ -24,7 +26,7 @@ class KioskApp extends StatelessWidget {
     final theme = buildKioskTheme();
 
     return MaterialApp(
-      title: 'VibeQueue Kiosk',
+      title: 'VibeQueue',
       debugShowCheckedModeBanner: false,
       // Light only, unconditionally. Every slot gets the same light theme so a
       // device switched to dark mode (or high contrast) at dusk cannot repaint
@@ -98,12 +100,21 @@ class _Root extends ConsumerWidget {
         if (!cfg.setupComplete || !cfg.isComplete || cfg.role == null) {
           return const SetupWizard();
         }
-        final hospital = cfg.vertical == DeviceVertical.hospital;
+        // (role, product) → screen. The role says what the device is (kiosk /
+        // board / web page); the product — the tenant's, set at sign-in — says
+        // which flavour of it. The web role is product-neutral: it just opens
+        // the URL the chosen service resolved to.
         final roleScreen = switch (cfg.role!) {
-          DeviceRole.kiosk =>
-            hospital ? const HospitalKioskScreen() : const KioskScreen(),
-          DeviceRole.display =>
-            hospital ? const HospitalBoardScreen() : const BoardScreen(),
+          DeviceRole.kiosk => switch (cfg.vertical) {
+              DeviceVertical.hospital => const HospitalKioskScreen(),
+              DeviceVertical.business => const BusinessKioskScreen(),
+              DeviceVertical.school => const KioskScreen(),
+            },
+          DeviceRole.display => switch (cfg.vertical) {
+              DeviceVertical.hospital => const HospitalBoardScreen(),
+              DeviceVertical.business => const BusinessBoardScreen(),
+              DeviceVertical.school => const BoardScreen(),
+            },
           DeviceRole.web => WebScreen(url: cfg.webUrl),
         };
         return PopScope(

@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 
 import '../config/auth_session.dart';
 import '../config/device_vertical.dart';
+import '../models/app_service.dart';
 import 'api_exception.dart';
 
 /// One facility the signed-in operator can provision this device against.
@@ -66,13 +67,14 @@ class AppProfileSummary {
 }
 
 /// Everything `POST /api/app/login` hands back — the session to store plus the
-/// provisioning choices, so the wizard needs no second call.
+/// provisioning choices, so the setup flow needs no second call.
 class AppLoginResult {
   const AppLoginResult({
     required this.session,
     required this.profile,
     required this.branches,
     required this.screens,
+    required this.services,
     required this.availableLanguages,
   });
 
@@ -80,19 +82,10 @@ class AppLoginResult {
   final AppProfileSummary profile;
   final List<AppBranch> branches;
   final List<AppScreen> screens;
-  final List<String> availableLanguages;
 
-  /// Screens for [branch] whose `kind` matches the product (display role).
-  List<AppScreen> screensFor(AppBranch branch) {
-    final wanted = switch (profile.vertical) {
-      DeviceVertical.hospital => 'hospital',
-      DeviceVertical.school => 'school',
-      DeviceVertical.business => 'queue',
-    };
-    return screens
-        .where((s) => s.branchId == branch.id && s.kind == wanted)
-        .toList();
-  }
+  /// What the operator can turn this device into (see [AppService]).
+  final List<AppService> services;
+  final List<String> availableLanguages;
 }
 
 /// Provisioning payload from `GET /api/app/provision` (same shape minus session).
@@ -101,12 +94,40 @@ class AppProvision {
     required this.profile,
     required this.branches,
     required this.screens,
+    required this.services,
     required this.availableLanguages,
   });
   final AppProfileSummary profile;
   final List<AppBranch> branches;
   final List<AppScreen> screens;
+  final List<AppService> services;
   final List<String> availableLanguages;
+}
+
+/// Parses the `services` array, falling back to building the native ones from
+/// branches + screens when the server predates it (see [AppService.synthesize]).
+List<AppService> _parseServices(
+  Map<String, dynamic> map,
+  AppProfileSummary profile,
+  List<AppBranch> branches,
+  List<AppScreen> screens,
+) {
+  final raw = map['services'];
+  if (raw is List) {
+    return raw
+        .whereType<Map>()
+        .map((e) => AppService.tryParse(e.cast<String, dynamic>()))
+        .whereType<AppService>()
+        .toList();
+  }
+  return AppService.synthesize(
+    vertical: profile.vertical,
+    branches: [for (final b in branches) (id: b.id, name: b.name, token: b.branchToken)],
+    screens: [
+      for (final s in screens)
+        (id: s.id, name: s.name, branchId: s.branchId, kind: s.kind, token: s.screenToken),
+    ],
+  );
 }
 
 /// The tenant's server-side settings row, plus the deployment locale menu. The
@@ -176,6 +197,8 @@ class AppApi {
     final map = await _post('/login', {'email': email.trim(), 'password': password});
     final s = map['session'] as Map<String, dynamic>;
     final profile = AppProfileSummary.fromJson(map['profile'] as Map<String, dynamic>);
+    final branches = _parseBranches(map);
+    final screens = _parseScreens(map);
     return AppLoginResult(
       session: AuthSession(
         accessToken: s['accessToken'] as String,
@@ -188,12 +211,9 @@ class AppApi {
         userRole: profile.role,
       ),
       profile: profile,
-      branches: ((map['branches'] as List?) ?? const [])
-          .map((e) => AppBranch.fromJson((e as Map).cast<String, dynamic>()))
-          .toList(),
-      screens: ((map['screens'] as List?) ?? const [])
-          .map((e) => AppScreen.fromJson((e as Map).cast<String, dynamic>()))
-          .toList(),
+      branches: branches,
+      screens: screens,
+      services: _parseServices(map, profile, branches, screens),
       availableLanguages:
           ((map['availableLanguages'] as List?) ?? const []).cast<String>(),
     );
@@ -226,17 +246,33 @@ class AppApi {
 
   Future<AppProvision> provision() async {
     final map = await _authedGet('/provision');
+    final profile = AppProfileSummary.fromJson(map['profile'] as Map<String, dynamic>);
+    final branches = _parseBranches(map);
+    final screens = _parseScreens(map);
     return AppProvision(
-      profile: AppProfileSummary.fromJson(map['profile'] as Map<String, dynamic>),
-      branches: ((map['branches'] as List?) ?? const [])
-          .map((e) => AppBranch.fromJson((e as Map).cast<String, dynamic>()))
-          .toList(),
-      screens: ((map['screens'] as List?) ?? const [])
-          .map((e) => AppScreen.fromJson((e as Map).cast<String, dynamic>()))
-          .toList(),
+      profile: profile,
+      branches: branches,
+      screens: screens,
+      services: _parseServices(map, profile, branches, screens),
       availableLanguages:
           ((map['availableLanguages'] as List?) ?? const []).cast<String>(),
     );
+  }
+
+  /// Creates a TV screen on [branchId] and answers with it as a display
+  /// service — so picking "Announcement display" never needs the dashboard.
+  /// The server enforces the plan's screen quota and says so in the error.
+  Future<AppService> createDisplay({
+    required String branchId,
+    required String name,
+  }) async {
+    final map = await _authedRequest(
+      () => _dio.post<dynamic>('/screens', data: {'branchId': branchId, 'name': name}),
+    );
+    final service =
+        AppService.tryParse((map['service'] as Map).cast<String, dynamic>());
+    if (service == null) throw ApiException('The server sent an unreadable screen.');
+    return service;
   }
 
   Future<TenantSettings> getSettings({required String branchId}) async {
@@ -257,6 +293,16 @@ class AppApi {
     );
     return TenantSettings.fromJson(map);
   }
+
+  static List<AppBranch> _parseBranches(Map<String, dynamic> map) =>
+      ((map['branches'] as List?) ?? const [])
+          .map((e) => AppBranch.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
+
+  static List<AppScreen> _parseScreens(Map<String, dynamic> map) =>
+      ((map['screens'] as List?) ?? const [])
+          .map((e) => AppScreen.fromJson((e as Map).cast<String, dynamic>()))
+          .toList();
 
   // ── Plumbing ───────────────────────────────────────────────
 

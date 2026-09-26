@@ -25,6 +25,8 @@ class DeviceConfig {
     this.vertical = DeviceVertical.business,
     this.defaultLocale = '',
     this.branchId = '',
+    this.serviceId = '',
+    this.serviceTitle = '',
   });
 
   final String baseUrl;
@@ -55,6 +57,14 @@ class DeviceConfig {
   /// a lookup. Empty for a pre-login (migrated) device or the web role.
   final String branchId;
 
+  /// Which catalog entry (`AppService.id`) the operator turned this device into,
+  /// and the title they saw for it. Purely descriptive — the role and tokens
+  /// above are what actually drive the screen — so Settings can say "Lobby TV"
+  /// and the picker can mark the current choice. Empty on a device provisioned
+  /// before the service list existed.
+  final String serviceId;
+  final String serviceTitle;
+
   final String? adminPinHash;
   final String? adminPinSalt;
   final int adminPinLength;
@@ -78,6 +88,8 @@ class DeviceConfig {
   static const _kBaseUrl = 'kiosk.baseUrl';
   static const _kBranchToken = 'kiosk.branchToken';
   static const _kBranchId = 'device.branchId';
+  static const _kServiceId = 'device.serviceId';
+  static const _kServiceTitle = 'device.serviceTitle';
   static const _kRole = 'device.role';
   static const _kVertical = 'device.vertical';
   static const _kScreenToken = 'device.screenToken';
@@ -116,6 +128,8 @@ class DeviceConfig {
       printer: PrinterSettings.decode(prefs.getString(_kPrinter)),
       defaultLocale: prefs.getString(_kDefaultLocale) ?? '',
       branchId: prefs.getString(_kBranchId) ?? '',
+      serviceId: prefs.getString(_kServiceId) ?? '',
+      serviceTitle: prefs.getString(_kServiceTitle) ?? '',
     );
   }
 
@@ -127,6 +141,8 @@ class DeviceConfig {
     await prefs.setBool(_kSetupComplete, setupComplete);
     await prefs.setString(_kBranchToken, branchToken.trim());
     await prefs.setString(_kBranchId, branchId.trim());
+    await prefs.setString(_kServiceId, serviceId);
+    await prefs.setString(_kServiceTitle, serviceTitle);
     await prefs.setString(_kScreenToken, screenToken.trim());
     await prefs.setString(_kWebUrl, webUrl.trim());
     if (adminPinHash != null) await prefs.setString(_kPinHash, adminPinHash!);
@@ -145,6 +161,8 @@ class DeviceConfig {
     await prefs.remove(_kVertical);
     await prefs.remove(_kBranchToken);
     await prefs.remove(_kBranchId);
+    await prefs.remove(_kServiceId);
+    await prefs.remove(_kServiceTitle);
     await prefs.remove(_kScreenToken);
     await prefs.remove(_kWebUrl);
     await prefs.remove(_kSetupComplete);
@@ -164,6 +182,8 @@ class DeviceConfig {
     int? adminPinLength,
     PrinterSettings? printer,
     String? defaultLocale,
+    String? serviceId,
+    String? serviceTitle,
   }) {
     return DeviceConfig(
       baseUrl: baseUrl ?? this.baseUrl,
@@ -179,6 +199,8 @@ class DeviceConfig {
       adminPinLength: adminPinLength ?? this.adminPinLength,
       printer: printer ?? this.printer,
       defaultLocale: defaultLocale ?? this.defaultLocale,
+      serviceId: serviceId ?? this.serviceId,
+      serviceTitle: serviceTitle ?? this.serviceTitle,
     );
   }
 }
