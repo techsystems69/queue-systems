@@ -1,8 +1,10 @@
+import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import { LogOut } from 'lucide-react'
 import { getUser, getProfile } from '@/lib/dal/session'
 import { logoutAction } from '@/lib/actions/auth'
 import { OnboardForm } from '@/components/auth/OnboardForm'
-import { LogOut } from 'lucide-react'
+import { AuthFooterRow, AuthHeading, AuthShell } from '@/components/auth/AuthShell'
 
 export default async function OnboardPage() {
   const user = await getUser()
@@ -15,59 +17,46 @@ export default async function OnboardPage() {
   const isTrapped = !!user
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-sm">
+    <AuthShell
+      headline="Get your queues"
+      headlineAccent="up and running."
+      blurb="Activate your workspace with the license key from your distributor. It takes a minute."
+    >
+      <AuthHeading
+        title="Activate your account"
+        subtitle="Enter your license key to create your workspace."
+      />
 
-        <div className="text-center mb-8">
-          <svg
-            width="32" height="32"
-            viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth="1.5"
-            strokeLinecap="round" strokeLinejoin="round"
-            className="text-gray-900 mx-auto mb-4"
-          >
-            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-            <line x1="16" y1="2" x2="16" y2="6"/>
-            <line x1="8" y1="2" x2="8" y2="6"/>
-            <line x1="3" y1="10" x2="21" y2="10"/>
-          </svg>
-          <h1 className="text-[22px] font-semibold text-gray-900 tracking-tight">
-            Activate Your Account
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">Enter your license key to get started</p>
-        </div>
-
-        {isTrapped && (
-          <div className="border border-gray-200 rounded-xl bg-white p-4 mb-4 flex items-start justify-between gap-4">
-            <div>
-              <p className="text-[13px] font-medium text-gray-900">No profile found</p>
-              <p className="text-[12px] text-gray-500 mt-0.5">
-                Your account exists but has no profile yet. Sign out and use the correct credentials.
-              </p>
-            </div>
-            <form action={logoutAction} className="shrink-0">
-              <button
-                type="submit"
-                className="flex items-center gap-1.5 text-[12px] font-medium text-gray-500 hover:text-gray-900 transition-colors"
-              >
-                <LogOut className="size-3.5" />
-                Sign out
-              </button>
-            </form>
+      {isTrapped && (
+        <div className="mb-6 flex items-start justify-between gap-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+          <div>
+            <p className="text-sm font-semibold text-amber-900">No profile found</p>
+            <p className="mt-0.5 text-[13px] text-amber-800/80">
+              Your account exists but has no profile yet. Sign out and use the correct credentials.
+            </p>
           </div>
-        )}
-
-        <div className="bg-white border border-gray-200 rounded-2xl p-8">
-          <OnboardForm />
+          <form action={logoutAction} className="shrink-0">
+            <button
+              type="submit"
+              className="flex items-center gap-1.5 text-[13px] font-semibold text-amber-900 hover:underline"
+            >
+              <LogOut className="size-3.5" />
+              Sign out
+            </button>
+          </form>
         </div>
+      )}
 
-        {!isTrapped && (
-          <p className="text-center text-[12px] text-gray-400 mt-5">
-            Already have an account?{' '}
-            <a href="/login" className="text-teal-600 hover:underline">Sign in</a>
-          </p>
-        )}
-      </div>
-    </div>
+      <OnboardForm />
+
+      {!isTrapped && (
+        <AuthFooterRow>
+          <span className="text-gray-500">Already have an account?</span>
+          <Link href="/login" className="font-semibold text-brand-600 hover:text-brand-700">
+            Sign in
+          </Link>
+        </AuthFooterRow>
+      )}
+    </AuthShell>
   )
 }

@@ -1,34 +1,32 @@
+import Link from 'next/link'
+import { ShieldCheck } from 'lucide-react'
 import { DistributorLoginForm } from '@/components/distributor/DistributorLoginForm'
+import { AuthFooterRow, AuthHeading, AuthShell } from '@/components/auth/AuthShell'
 
 export default function DistributorLoginPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background px-4">
-      <div className="w-full max-w-85">
+    <AuthShell
+      headline="Every customer,"
+      headlineAccent="every key."
+      blurb="Onboard customers, issue license keys and keep every deployment in view."
+      tags={['Customers', 'License keys', 'Deployments']}
+    >
+      <AuthHeading
+        title="Distributor portal"
+        subtitle="Enter your distributor secret to continue."
+      />
 
-        <div className="text-center mb-8">
-          <svg
-            width="32" height="32"
-            viewBox="0 0 24 24" fill="none"
-            stroke="currentColor" strokeWidth="1.5"
-            strokeLinecap="round" strokeLinejoin="round"
-            className="text-gray-900 mx-auto mb-4"
-          >
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-          </svg>
-          <h1 className="text-[22px] font-semibold text-gray-900 tracking-tight">
-            Distributor Portal
-          </h1>
-          <p className="text-sm text-gray-500 mt-1">Restricted access</p>
-        </div>
+      <DistributorLoginForm />
 
-        <div className="bg-white border border-gray-200 rounded-2xl p-8">
-          <DistributorLoginForm />
-        </div>
-
-        <p className="text-center text-[12px] text-gray-400 mt-5">
+      <AuthFooterRow>
+        <span className="flex items-center gap-2 text-gray-500">
+          <ShieldCheck className="size-4" aria-hidden />
           Authorized distributors only
-        </p>
-      </div>
-    </div>
+        </span>
+        <Link href="/login" className="font-semibold text-brand-600 hover:text-brand-700">
+          Customer sign in
+        </Link>
+      </AuthFooterRow>
+    </AuthShell>
   )
 }

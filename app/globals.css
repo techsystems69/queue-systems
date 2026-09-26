@@ -69,6 +69,14 @@
   --color-accent-600: var(--color-emerald-600);
   --color-accent-700: var(--color-emerald-700);
 
+  /* Sign-in / activation surfaces (components/auth). The native app's login
+     screen (mobile/kiosk .../login_step.dart) uses the same values. */
+  --color-brand-900: #1a4537;
+  --color-brand-700: #185340;
+  --color-brand-600: #1f6650;
+  --color-brand-300: #b7e0cf;
+  --color-brand-200: #d5eee3;
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
