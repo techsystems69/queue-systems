@@ -6,7 +6,7 @@ import { createSupabaseServiceClient } from '@/lib/db/server'
 import { requireDistributor } from '@/lib/dal/session'
 import type { CustomerVertical, DistributorStats } from '@/lib/db/types'
 import { MAX_SCHOOL_ENTITLEMENT, MAX_HOSPITAL_ENTITLEMENT } from '@/lib/db/types'
-import { DEFAULT_VERTICAL, VERTICALS, isVertical } from '@/lib/verticals'
+import { DEFAULT_VERTICAL, DISTRIBUTOR_VERTICALS, isSellableVertical } from '@/lib/verticals'
 import { regionLocales } from '@/lib/region'
 import { seedDefaultHospitalDepartments } from '@/lib/hospital/defaultDepartments'
 
@@ -18,7 +18,7 @@ function defaultLicenseKeyExpiry(): string {
 
 // ── Create customer + issue license key ───────────────────────
 const VerticalSchema = z
-  .enum(VERTICALS.map((v) => v.value) as [CustomerVertical, ...CustomerVertical[]])
+  .enum(DISTRIBUTOR_VERTICALS.map((v) => v.value) as [CustomerVertical, ...CustomerVertical[]])
   .default(DEFAULT_VERTICAL)
 
 const CreateCustomerSchema = z.object({
@@ -166,7 +166,7 @@ export async function generateLicenseKeyAction(
   vertical: CustomerVertical = DEFAULT_VERTICAL
 ): Promise<{ error?: string; key?: string }> {
   await requireDistributor()
-  if (!isVertical(vertical)) return { error: 'Unknown system' }
+  if (!isSellableVertical(vertical)) return { error: 'Unknown system' }
   const service = createSupabaseServiceClient()
 
   const key = [
@@ -201,7 +201,7 @@ export async function setLicenseKeyVerticalAction(
   vertical: CustomerVertical
 ): Promise<{ error?: string }> {
   await requireDistributor()
-  if (!isVertical(vertical)) return { error: 'Unknown system' }
+  if (!isSellableVertical(vertical)) return { error: 'Unknown system' }
 
   const service = createSupabaseServiceClient()
 

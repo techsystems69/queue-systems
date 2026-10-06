@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { VERTICALS, DEFAULT_VERTICAL, verticalMeta } from '@/lib/verticals'
+import { DISTRIBUTOR_VERTICALS, DEFAULT_VERTICAL, verticalMeta } from '@/lib/verticals'
 import type { CustomerVertical } from '@/lib/db/types'
 import {
   createCustomerAction, toggleCustomerActiveAction, changePlanAction,
@@ -128,7 +128,7 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                   <Select value={vertical} onValueChange={(v) => handleVerticalChange(v as CustomerVertical)}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select system" /></SelectTrigger>
                     <SelectContent>
-                      {VERTICALS.map(v => (
+                      {DISTRIBUTOR_VERTICALS.map(v => (
                         <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
                       ))}
                     </SelectContent>

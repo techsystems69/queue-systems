@@ -41,6 +41,21 @@ export const VERTICALS: VerticalMeta[] = [
   },
 ]
 
+// What the distributor panel offers for new customers and license keys.
+// Hospital is hidden for now: derived from VERTICALS rather than removed from
+// it, so existing hospital tenants still resolve labels and routing. Put
+// 'hospital' back in the list below to sell it again.
+const UNSOLD_VERTICALS: CustomerVertical[] = [
+  'hospital',
+]
+export const DISTRIBUTOR_VERTICALS: VerticalMeta[] = VERTICALS.filter(
+  (v) => !UNSOLD_VERTICALS.includes(v.value)
+)
+
+export function isSellableVertical(value: unknown): value is CustomerVertical {
+  return DISTRIBUTOR_VERTICALS.some((v) => v.value === value)
+}
+
 export const DEFAULT_VERTICAL: CustomerVertical = 'business'
 
 export function isVertical(value: unknown): value is CustomerVertical {

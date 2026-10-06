@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { generateLicenseKeyAction, setLicenseKeyVerticalAction } from '@/lib/actions/distributor'
-import { VERTICALS, DEFAULT_VERTICAL, verticalMeta } from '@/lib/verticals'
+import { VERTICALS, DISTRIBUTOR_VERTICALS, DEFAULT_VERTICAL, verticalMeta } from '@/lib/verticals'
 import type { CustomerVertical } from '@/lib/db/types'
 import { Plus, Copy, CheckCircle2, Lock } from 'lucide-react'
 import { toast } from 'sonner'
@@ -93,7 +93,7 @@ export function LicenseKeysManager({ keys, plans }: Props) {
               <SelectValue placeholder="Select system" />
             </SelectTrigger>
             <SelectContent>
-              {VERTICALS.map(v => (
+              {DISTRIBUTOR_VERTICALS.map(v => (
                 <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
               ))}
             </SelectContent>
@@ -166,7 +166,8 @@ export function LicenseKeysManager({ keys, plans }: Props) {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {VERTICALS.map(v => (
+                          {/* keep a key's current system visible even if it's no longer sold */}
+                          {VERTICALS.filter(v => v.value === k.vertical || DISTRIBUTOR_VERTICALS.includes(v)).map(v => (
                             <SelectItem key={v.value} value={v.value}>{v.label}</SelectItem>
                           ))}
                         </SelectContent>
