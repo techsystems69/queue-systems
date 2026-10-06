@@ -116,7 +116,9 @@ export async function verifyDistributor(): Promise<boolean> {
   const { cookies } = await import('next/headers')
   const cookieStore = await cookies()
   const session = cookieStore.get('dist_session')?.value
-  return session === process.env.DISTRIBUTOR_SECRET
+  const secret = process.env.DISTRIBUTOR_SECRET
+  // An unset secret must deny, not match a missing cookie (undefined === undefined).
+  return !!secret && session === secret
 }
 
 export async function requireDistributor(): Promise<void> {

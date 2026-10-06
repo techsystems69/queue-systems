@@ -5,7 +5,8 @@ import { DistributorSidebar } from '@/components/distributor/DistributorSidebar'
 export default async function DistributorLayout({ children }: { children: React.ReactNode }) {
   const cookieStore = await cookies()
   const session = cookieStore.get('dist_session')?.value
-  if (session !== process.env.DISTRIBUTOR_SECRET) {
+  const secret = process.env.DISTRIBUTOR_SECRET
+  if (!secret || session !== secret) {
     redirect('/distributor/login')
   }
 

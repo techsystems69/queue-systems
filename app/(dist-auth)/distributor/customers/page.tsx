@@ -3,6 +3,7 @@ import { getAllCustomers } from '@/lib/dal/customers'
 import { DistributorCustomersManager } from '@/components/distributor/DistributorCustomersManager'
 import { createSupabaseServiceClient } from '@/lib/db/server'
 import { getSchoolBranchIdentities } from '@/lib/dal/school'
+import type { CustomerVertical } from '@/lib/db/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -12,12 +13,22 @@ export default async function DistributorCustomersPage() {
     getAllCustomers(),
     (async () => {
       const supabase = createSupabaseServiceClient()
-      const { data } = await supabase
+      // select('*') rather than naming the hospital-tier columns: a DB that
+      // hasn't had 20260905_hospital_plans applied would otherwise reject the
+      // whole query and, with the error dropped, render an empty plan picker.
+      const { data, error } = await supabase
         .from('plans')
-        .select('id, name, vertical, default_department_limit, default_counter_limit')
+        .select('*')
         .eq('is_active', true)
         .order('price_monthly')
-      return data ?? []
+      if (error) console.error('[distributor/customers] plans query failed', error.code, error.message)
+      return (data ?? []).map((p) => ({
+        id: p.id as string,
+        name: p.name as string,
+        vertical: (p.vertical ?? null) as CustomerVertical | null,
+        default_department_limit: (p.default_department_limit ?? null) as number | null,
+        default_counter_limit: (p.default_counter_limit ?? null) as number | null,
+      }))
     })(),
   ])
 

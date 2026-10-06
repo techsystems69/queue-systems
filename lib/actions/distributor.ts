@@ -49,7 +49,7 @@ export async function createCustomerAction(
   // this just refuses a client that bypassed it.
   const { data: plan } = await service
     .from('plans')
-    .select('vertical, default_department_limit, default_counter_limit')
+    .select('*')
     .eq('id', parsed.data.planId)
     .maybeSingle()
   if (!plan) return { error: 'Plan not found' }
@@ -265,7 +265,7 @@ export async function changePlanAction(customerId: string, planId: string): Prom
   // the way to fine-tune away from the tier's defaults afterwards.
   const { data: plan } = await service
     .from('plans')
-    .select('vertical, default_department_limit, default_counter_limit')
+    .select('*')
     .eq('id', planId)
     .maybeSingle()
 
