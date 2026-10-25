@@ -1,5 +1,3 @@
-import { savePushSubscriptionAction } from '@/lib/actions/push'
-
 export function pushSupported(): boolean {
   return (
     typeof window !== 'undefined' &&
@@ -23,11 +21,15 @@ function serviceWorkerReady(): Promise<ServiceWorkerRegistration> {
   ])
 }
 
+type SaveFn = (subscription: PushSubscriptionJSON, userAgent: string) => Promise<{ error?: string }>
+type RemoveFn = (endpoint: string) => Promise<{ error?: string }>
+
 // Subscribes this browser to push (reusing an existing subscription) and
-// (re)registers it against the counter. Safe to call on every page load: the
-// server upserts on endpoint, which also refreshes a subscription the browser
-// rotated since last time. Returns true when the counter will receive pushes.
-export async function subscribeToCounterPush(counterToken: string): Promise<boolean> {
+// (re)registers it with the server via `save` — which differs per recipient
+// kind (hotel counter, school counter, manager). Safe to call on every page
+// load: the server upserts on endpoint, which also refreshes a subscription the
+// browser rotated since last time. Returns true when pushes will arrive.
+export async function subscribeToPush(save: SaveFn): Promise<boolean> {
   if (!pushSupported()) return false
   try {
     const reg = await serviceWorkerReady()
@@ -36,11 +38,30 @@ export async function subscribeToCounterPush(counterToken: string): Promise<bool
     if (!sub) {
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key })
     }
-    const result = await savePushSubscriptionAction(counterToken, sub.toJSON(), navigator.userAgent)
-    if (result.error) return false
-    return true
+    const result = await save(sub.toJSON(), navigator.userAgent)
+    return !result.error
   } catch {
     // Permission revoked, VAPID key rotated (InvalidStateError), or no network.
     return false
   }
+}
+
+// Turning alerts off: forget this browser on the server first, then drop the
+// browser-side subscription so the push service stops accepting messages for it.
+export async function unsubscribeFromPush(remove: RemoveFn): Promise<void> {
+  if (!pushSupported()) return
+  try {
+    const reg = await serviceWorkerReady()
+    const sub = await reg.pushManager.getSubscription()
+    if (!sub) return
+    await remove(sub.endpoint).catch(() => {})
+    await sub.unsubscribe()
+  } catch { /* already gone */ }
+}
+
+export function closeNotificationsByTag(tag: string): void {
+  navigator.serviceWorker?.getRegistration()
+    .then(reg => reg?.getNotifications({ tag }))
+    .then(list => list?.forEach(n => n.close()))
+    .catch(() => {})
 }

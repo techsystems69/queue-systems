@@ -16,6 +16,7 @@ import { toast } from 'sonner'
 import { formatTime } from '@/lib/queueUtils'
 import { CounterPresenceAlert } from '@/components/counter/CounterPresenceAlert'
 import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
+import { AlertToggle } from '@/components/counter/AlertToggle'
 import { ConsoleFrame, ConsoleLoading, TaskSplit, ElapsedPill, useNow, minutesSince, useTapGuard } from '@/components/counter/console'
 import type { QueueEntryDTO } from '@/lib/db/types'
 
@@ -146,9 +147,10 @@ export function DeliveryCounter({ branchId, counterId, counterName, counterToken
       icon={Truck}
       name={counterName}
       typeLabel="Delivery · Dispatch Station"
+      headerRight={<AlertToggle toggle={alerts.toggle} />}
       banner={
         <>
-          <CounterAlertBar unseenCount={alerts.unseenCount} needsSetup={alerts.needsSetup} onEnable={alerts.enableAlerts} onAcknowledge={alerts.acknowledge} />
+          <CounterAlertBar unseenCount={alerts.unseenCount} onAcknowledge={alerts.acknowledge} />
           <CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />
         </>
       }

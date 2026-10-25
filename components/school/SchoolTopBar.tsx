@@ -9,6 +9,7 @@ import {
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from '@/components/ui/sheet'
 import { setActiveBranchAction } from '@/lib/actions/branches'
 import { SchoolSidebar } from '@/components/school/SchoolSidebar'
+import { ManagerAlertBell } from '@/components/shared/ManagerAlertBell'
 import type { BranchDTO } from '@/lib/db/types'
 
 interface Props {
@@ -75,6 +76,10 @@ export function SchoolTopBar({ branches, activeBranchId, schoolName }: Props) {
       ) : (
         <p className="text-sm font-semibold text-slate-800 truncate">{active?.name}</p>
       )}
+
+      <div className="ms-auto">
+        <ManagerAlertBell />
+      </div>
     </header>
   )
 }

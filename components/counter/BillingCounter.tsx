@@ -15,6 +15,7 @@ import { Receipt, SkipForward, CheckCircle2, ChefHat, BellRing, Clock } from 'lu
 import { toast } from 'sonner'
 import { CounterPresenceAlert } from '@/components/counter/CounterPresenceAlert'
 import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
+import { AlertToggle } from '@/components/counter/AlertToggle'
 import { ConsoleFrame, ConsoleLoading, TaskSplit, ElapsedPill, ConfirmCancel, useNow, minutesSince } from '@/components/counter/console'
 import type { QueueEntryDTO } from '@/lib/db/types'
 
@@ -89,9 +90,10 @@ export function BillingCounter({ branchId, counterId, counterName, counterToken,
       icon={Receipt}
       name={counterName}
       typeLabel="Billing · Cashier Station"
+      headerRight={<AlertToggle toggle={alerts.toggle} />}
       banner={
         <>
-          <CounterAlertBar unseenCount={alerts.unseenCount} needsSetup={alerts.needsSetup} onEnable={alerts.enableAlerts} onAcknowledge={alerts.acknowledge} />
+          <CounterAlertBar unseenCount={alerts.unseenCount} onAcknowledge={alerts.acknowledge} />
           <CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />
         </>
       }

@@ -27,15 +27,20 @@ export const ALERT_PHRASE: Partial<Record<CounterType, string>> = {
   delivery: 'ready for delivery',
 }
 
-export function describeAlert(type: CounterType, entries: Pick<QueueEntryDTO, 'queueNumber'>[]): { title: string; body: string } {
-  const sorted = [...entries].sort((a, b) => a.queueNumber - b.queueNumber)
-  const what = ALERT_PHRASE[type] ?? 'waiting'
-  if (sorted.length === 1) {
-    return { title: `Order #${sorted[0].queueNumber}`, body: `Order #${sorted[0].queueNumber} is ${what}` }
+// Wording shared by the in-page alert and the service worker (public/sw.js
+// mirrors this for pushed notifications — keep them in step).
+export function describeAlertItems(
+  noun: string,
+  phrase: string,
+  labels: string[]
+): { title: string; body: string } {
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1)
+  if (labels.length === 1) {
+    return { title: `${Noun} ${labels[0]}`, body: `${Noun} ${labels[0]} is ${phrase}` }
   }
-  const numbers = sorted.slice(0, 4).map(e => `#${e.queueNumber}`).join(', ')
+  const shown = labels.slice(0, 4).join(', ')
   return {
-    title: `${sorted.length} orders ${what}`,
-    body: sorted.length > 4 ? `${numbers} and ${sorted.length - 4} more` : numbers,
+    title: `${labels.length} ${noun}s ${phrase}`,
+    body: labels.length > 4 ? `${shown} and ${labels.length - 4} more` : shown,
   }
 }

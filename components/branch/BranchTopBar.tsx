@@ -5,6 +5,7 @@ import { Menu } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
 import { BranchSidebar } from './BranchSidebar'
+import { ManagerAlertBell } from '@/components/shared/ManagerAlertBell'
 import { useState } from 'react'
 import type { CounterDTO } from '@/lib/db/types'
 
@@ -42,6 +43,8 @@ export function BranchTopBar({ branchName, counters = [] }: BranchTopBarProps) {
       <div className="flex-1 min-w-0">
         <h1 className="text-base font-semibold text-slate-800 truncate">{title}</h1>
       </div>
+
+      <ManagerAlertBell />
     </header>
   )
 }

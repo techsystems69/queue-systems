@@ -10,6 +10,7 @@ import { ChefHat, Flame, CheckCircle2, Inbox, WifiOff } from 'lucide-react'
 import { toast } from 'sonner'
 import { CounterPresenceAlert } from '@/components/counter/CounterPresenceAlert'
 import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
+import { AlertToggle } from '@/components/counter/AlertToggle'
 import { ConsoleFrame, ConsoleLoading, ElapsedPill, useNow, minutesSince, useTapGuard } from '@/components/counter/console'
 import type { QueueEntryDTO } from '@/lib/db/types'
 import type { LucideIcon } from 'lucide-react'
@@ -81,10 +82,15 @@ export function KitchenCounter({ branchId, counterId, counterName, counterToken,
       icon={ChefHat}
       name={counterName}
       typeLabel="Kitchen · Prep Station"
-      headerRight={<AcceptingOrdersToggle acceptingOrders={acceptingOrders} pending={togglePending} onToggle={handleToggleAccepting} />}
+      headerRight={
+        <>
+          <AlertToggle toggle={alerts.toggle} />
+          <AcceptingOrdersToggle acceptingOrders={acceptingOrders} pending={togglePending} onToggle={handleToggleAccepting} />
+        </>
+      }
       banner={
         <>
-          <CounterAlertBar unseenCount={alerts.unseenCount} needsSetup={alerts.needsSetup} onEnable={alerts.enableAlerts} onAcknowledge={alerts.acknowledge} />
+          <CounterAlertBar unseenCount={alerts.unseenCount} onAcknowledge={alerts.acknowledge} />
           {!acceptingOrders && (
             <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-3 py-1.5 flex items-center gap-2">
               <WifiOff className="size-3.5 text-amber-600 shrink-0" />

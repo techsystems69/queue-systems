@@ -44,13 +44,13 @@ self.addEventListener("fetch", (e) => {
   )
 })
 
-const ALERT_TAG = "counter-alert"
 // A notification still on screen from long ago is not part of "now".
 const MERGE_WINDOW_MS = 10 * 60 * 1000
 
-// Ask a visible counter page whether its operator is actually looking (the
-// page owns that idle/visibility logic). No answer in time counts as "no".
-function askAttentive(client) {
+// Ask a visible page whether its operator is actually looking (the page owns
+// that idle/visibility logic). `tag` says which kind of alert this is, so a
+// manager tab can't vouch for a counter alert. No answer in time counts as "no".
+function askAttentive(client, tag) {
   return new Promise((resolve) => {
     const channel = new MessageChannel()
     const timer = setTimeout(() => resolve(false), 800)
@@ -58,50 +58,58 @@ function askAttentive(client) {
       clearTimeout(timer)
       resolve(ev.data === true)
     }
-    client.postMessage({ type: "counter-push-check" }, [channel.port2])
+    client.postMessage({ type: "counter-push-check", tag }, [channel.port2])
   })
 }
 
-async function showCounterAlert(data) {
+// Payload shape: lib/push/payload.ts. Older payloads ({counterName, number})
+// are still understood so a deploy mid-flight doesn't drop an alert.
+async function showAlert(data) {
+  const tag = data.tag ?? "counter-alert"
+  const heading = data.heading ?? data.counterName
+  const label = data.label ?? `#${data.number}`
+  const noun = data.noun ?? "order"
+
   const windows = await clients.matchAll({ type: "window", includeUncontrolled: true })
   const visible = windows.filter((c) => c.visibilityState === "visible")
   // Only skipping when a page is on screen is permitted by the Push API, and
-  // only worth it when its operator is already looking at the new order.
-  if (visible.length && (await Promise.all(visible.map(askAttentive))).some(Boolean)) return
+  // only worth it when its operator is already looking at the new item.
+  if (visible.length && (await Promise.all(visible.map((c) => askAttentive(c, tag)))).some(Boolean)) return
 
   // Bursts (e.g. a kitchen going offline releases many orders) collapse into
-  // one notification instead of a stack. Wording mirrors describeAlert() in
-  // lib/counterNotifications.ts.
-  const existing = await self.registration.getNotifications({ tag: ALERT_TAG })
+  // one notification instead of a stack. Wording mirrors describeAlertItems()
+  // in lib/counterNotifications.ts.
+  const existing = await self.registration.getNotifications({ tag })
   const fresh = existing.find((n) => n.data && Date.now() - n.data.at < MERGE_WINDOW_MS)
-  const numbers = [...new Set([...(fresh?.data.numbers ?? []), data.number])].sort((a, b) => a - b)
+  const labels = [...new Set([...(fresh?.data.labels ?? []), label])]
 
+  const Noun = noun.charAt(0).toUpperCase() + noun.slice(1)
   let title, body
-  if (numbers.length === 1) {
-    title = `${data.counterName} · Order #${numbers[0]}`
-    body = `Order #${numbers[0]} is ${data.what}`
+  if (labels.length === 1) {
+    title = `${heading} · ${Noun} ${labels[0]}`
+    body = `${Noun} ${labels[0]} is ${data.what}`
   } else {
-    const shown = numbers.slice(0, 4).map((n) => `#${n}`).join(", ")
-    title = `${data.counterName} · ${numbers.length} orders ${data.what}`
-    body = numbers.length > 4 ? `${shown} and ${numbers.length - 4} more` : shown
+    const shown = labels.slice(0, 4).join(", ")
+    title = `${heading} · ${labels.length} ${noun}s ${data.what}`
+    body = labels.length > 4 ? `${shown} and ${labels.length - 4} more` : shown
   }
 
   await self.registration.showNotification(title, {
     body,
     icon: "/icon.svg",
-    tag: ALERT_TAG,
+    tag,
     renotify: true,
     requireInteraction: true,
     vibrate: [200, 100, 200],
-    data: { url: data.url, numbers, at: Date.now() },
+    data: { url: data.url, labels, at: Date.now() },
   })
 }
 
 self.addEventListener("push", (e) => {
   if (!e.data) return
   const data = e.data.json()
-  if (data.counterName) {
-    e.waitUntil(showCounterAlert(data))
+  if (data.heading || data.counterName) {
+    e.waitUntil(showAlert(data))
     return
   }
   e.waitUntil(

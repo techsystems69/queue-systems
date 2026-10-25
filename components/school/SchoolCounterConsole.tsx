@@ -13,6 +13,9 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
+import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
+import { AlertToggle } from '@/components/counter/AlertToggle'
+import { useSchoolCounterNotifications } from '@/lib/hooks/useSchoolCounterNotifications'
 import {
   schoolCallNextAction, schoolCallCodeAction, schoolRecallAction,
   schoolDoneAction, schoolNoShowAction, schoolHoldAction, schoolTransferAction,
@@ -80,6 +83,11 @@ export function SchoolCounterConsole({ counterToken, initial }: {
 
   const current = view.current
   const waiting = view.waiting ?? []
+  const alerts = useSchoolCounterNotifications({
+    counterToken,
+    counterName: view.counterName ?? 'Counter',
+    waiting,
+  })
   const departments = view.departments ?? []
   const issuable = view.issuable ?? []
   const noShows = view.noShows ?? []
@@ -202,6 +210,8 @@ export function SchoolCounterConsole({ counterToken, initial }: {
       name={view.counterName ?? 'Counter'}
       typeLabel="Calling Station"
       headerRight={
+        <>
+        <AlertToggle toggle={alerts.toggle} />
         <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
           {view.isOpen ? 'Open' : 'Closed'}
           <Switch
@@ -219,13 +229,17 @@ export function SchoolCounterConsole({ counterToken, initial }: {
             }}
           />
         </label>
+        </>
       }
       banner={
-        departments.length === 0 ? (
-          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm font-medium text-amber-800">
-            No departments are assigned to this counter yet, so Next has nothing to call.
-          </div>
-        ) : undefined
+        <>
+          <CounterAlertBar unseenCount={alerts.unseenCount} onAcknowledge={alerts.acknowledge} />
+          {departments.length === 0 && (
+            <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm font-medium text-amber-800">
+              No departments are assigned to this counter yet, so Next has nothing to call.
+            </div>
+          )}
+        </>
       }
     >
       <TaskSplit

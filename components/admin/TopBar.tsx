@@ -8,6 +8,7 @@ import { Sidebar } from './Sidebar'
 import { BranchSwitcher } from './BranchSwitcher'
 import { useState } from 'react'
 import { usePWAInstall } from '@/hooks/usePWAInstall'
+import { ManagerAlertBell } from '@/components/shared/ManagerAlertBell'
 import type { BranchDTO } from '@/lib/db/types'
 
 function getTitle(pathname: string): string {
@@ -53,6 +54,8 @@ export function TopBar({ branches, activeBranchId }: Props) {
       </div>
 
       <BranchSwitcher branches={branches} activeBranchId={activeBranchId} />
+
+      <ManagerAlertBell />
 
       {canInstall && (
         <Button onClick={install} size="sm" variant="outline" className="gap-1.5 text-accent-700 border-accent-200 active:bg-accent-50 shrink-0">
