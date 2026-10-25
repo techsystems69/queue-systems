@@ -12,6 +12,7 @@ import {
 import {
   toSchoolDepartmentDTO, toSchoolCounterDTO, toSchoolSettingsDTO,
   type SchoolDepartmentDTO, type SchoolCounterDTO, type SchoolSettingsDTO,
+  type SchoolDeviceScope,
   type DbSchoolDepartment, type DbSchoolCounter, type DbSchoolSettings,
 } from '@/lib/db/school-types'
 import { coerceLocales, regionLocales, type LocaleMap } from '@/lib/region'
@@ -539,6 +540,17 @@ export async function updateSchoolCounterAction(
   if (error?.code === '23505') return { error: 'That keypad code is already used at this branch' }
   if (error || !data) return { error: 'Could not update the counter' }
 
+  // A desk kiosk pins its tickets to one counter. Switching that counter off
+  // would leave those visitors waiting for a window nobody can call from, so
+  // hand them back to the department's shared pool.
+  if (patch.isActive === false) {
+    await supabase
+      .from('school_tokens')
+      .update({ target_counter_id: null })
+      .eq('target_counter_id', counterId)
+      .in('status', ['waiting', 'held'])
+  }
+
   publishSchoolChange(branchId)
   revalidatePath('/school/counters')
   return { counter: toSchoolCounterDTO(data as DbSchoolCounter) }
@@ -687,28 +699,30 @@ export async function saveSchoolSettingsAction(
   return { settings: toSchoolSettingsDTO(data as DbSchoolSettings) }
 }
 
-// ── School TV screens ─────────────────────────────────────────
-// Screens are the shared table — that's what gives the school board the ads
-// cascade, the plan quota and presence for free. `kind` is the only thing that
-// makes one a school board.
-export async function createSchoolScreenAction(
-  _prev: { error?: string; screenToken?: string },
-  formData: FormData
-): Promise<{ error?: string; screenToken?: string }> {
-  const branchId = String(formData.get('branchId') ?? '')
-  const name = String(formData.get('name') ?? '').trim()
-  if (!branchId || !name) return { error: 'Screen name is required' }
+// ── Device scope helpers ──────────────────────────────────────
+// Every id a scoped device names must belong to the caller's branch: the ids
+// come from a form the client controls, and a cross-branch id in a junction
+// row would leak another school's departments onto this school's board.
+async function ownedIds(
+  table: 'school_departments' | 'school_counters',
+  branchId: string,
+  ids: string[]
+): Promise<string[] | null> {
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) return []
+  const { data } = await createSupabaseServiceClient()
+    .from(table).select('id').eq('branch_id', branchId).in('id', unique)
+  return ((data ?? []) as { id: string }[]).length === unique.length ? unique : null
+}
 
-  let profile
-  try {
-    profile = await requireBranchManager(branchId)
-  } catch (e) {
-    return { error: e instanceof Error ? e.message : 'Access denied' }
-  }
+const ScopeSchema = z.object({
+  departmentIds: z.array(z.string().uuid()).max(100).default([]),
+  counterIds: z.array(z.string().uuid()).max(100).default([]),
+})
 
+// The plan's max_screens_per_branch, shared by every way a screen gets made.
+async function screenQuotaError(customerId: string, branchId: string): Promise<string | null> {
   const supabase = createSupabaseServiceClient()
-
-  // Same plan quota the existing createScreenAction enforces.
   const { count } = await supabase
     .from('screens')
     .select('*', { count: 'exact', head: true })
@@ -718,15 +732,80 @@ export async function createSchoolScreenAction(
   const { data: planData } = await supabase
     .from('customers')
     .select('plans(max_screens_per_branch)')
-    .eq('id', profile.customerId)
+    .eq('id', customerId)
     .single()
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const maxScreens = (planData as any)?.plans?.max_screens_per_branch ?? 2
-  if ((count ?? 0) >= maxScreens) {
-    return { error: `You have reached the maximum number of screens (${maxScreens}) for this branch on your plan.` }
+  return (count ?? 0) >= maxScreens
+    ? `You have reached the maximum number of screens (${maxScreens}) for this branch on your plan.`
+    : null
+}
+
+async function writeScreenScope(screenId: string, scope: SchoolDeviceScope) {
+  const supabase = createSupabaseServiceClient()
+  await Promise.all([
+    supabase.from('school_screen_departments').delete().eq('screen_id', screenId),
+    supabase.from('school_screen_counters').delete().eq('screen_id', screenId),
+  ])
+  if (scope.departmentIds.length > 0) {
+    await supabase.from('school_screen_departments').insert(
+      scope.departmentIds.map((department_id) => ({ screen_id: screenId, department_id }))
+    )
+  }
+  if (scope.counterIds.length > 0) {
+    await supabase.from('school_screen_counters').insert(
+      scope.counterIds.map((counter_id) => ({ screen_id: screenId, counter_id }))
+    )
+  }
+}
+
+async function writeKioskDepartments(kioskId: string, departmentIds: string[]) {
+  const supabase = createSupabaseServiceClient()
+  await supabase.from('school_kiosk_departments').delete().eq('kiosk_id', kioskId)
+  if (departmentIds.length > 0) {
+    await supabase.from('school_kiosk_departments').insert(
+      departmentIds.map((department_id) => ({ kiosk_id: kioskId, department_id }))
+    )
+  }
+}
+
+// ── School TV screens ─────────────────────────────────────────
+// Screens are the shared table — that's what gives the school board the ads
+// cascade, the plan quota and presence for free. `kind` is the only thing that
+// makes one a school board. An optional scope (departments and/or counters)
+// narrows the board to those windows; no scope = the whole branch.
+export async function createSchoolScreenAction(
+  _prev: { error?: string; screenToken?: string },
+  formData: FormData
+): Promise<{ error?: string; screenToken?: string }> {
+  const branchId = String(formData.get('branchId') ?? '')
+  const name = String(formData.get('name') ?? '').trim()
+  if (!branchId || !name) return { error: 'Screen name is required' }
+
+  const parsedScope = ScopeSchema.safeParse({
+    departmentIds: formData.getAll('scopeDepartmentIds').map(String),
+    counterIds: formData.getAll('scopeCounterIds').map(String),
+  })
+  if (!parsedScope.success) return { error: 'Invalid selection' }
+
+  let profile
+  try {
+    profile = await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
   }
 
+  const [departmentIds, counterIds] = await Promise.all([
+    ownedIds('school_departments', branchId, parsedScope.data.departmentIds),
+    ownedIds('school_counters', branchId, parsedScope.data.counterIds),
+  ])
+  if (!departmentIds || !counterIds) return { error: 'Unknown department or counter' }
+
+  const quotaError = await screenQuotaError(profile.customerId, branchId)
+  if (quotaError) return { error: quotaError }
+
+  const supabase = createSupabaseServiceClient()
   const { data, error } = await supabase
     .from('screens')
     .insert({
@@ -736,14 +815,316 @@ export async function createSchoolScreenAction(
       kind: 'school',
       orientation: 'landscape',
     })
-    .select('screen_token')
+    .select('id, screen_token')
     .single()
 
   if (error || !data) return { error: 'Could not create the screen' }
 
+  const row = data as { id: string; screen_token: string }
+  await writeScreenScope(row.id, { departmentIds, counterIds })
+
   publishSchoolChange(branchId)
   revalidatePath('/school/screens')
-  return { screenToken: (data as { screen_token: string }).screen_token }
+  return { screenToken: row.screen_token }
+}
+
+// Re-point an existing display at a different slice of the branch.
+export async function setSchoolScreenScopeAction(
+  screenId: string,
+  branchId: string,
+  scope: SchoolDeviceScope
+): Promise<{ error?: string }> {
+  try {
+    await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  const parsed = ScopeSchema.safeParse(scope)
+  if (!parsed.success) return { error: 'Invalid selection' }
+
+  const supabase = createSupabaseServiceClient()
+  const { data: screen } = await supabase
+    .from('screens').select('id').eq('id', screenId).eq('branch_id', branchId).eq('kind', 'school')
+    .maybeSingle()
+  if (!screen) return { error: 'Unknown screen' }
+
+  const [departmentIds, counterIds] = await Promise.all([
+    ownedIds('school_departments', branchId, parsed.data.departmentIds),
+    ownedIds('school_counters', branchId, parsed.data.counterIds),
+  ])
+  if (!departmentIds || !counterIds) return { error: 'Unknown department or counter' }
+
+  await writeScreenScope(screenId, { departmentIds, counterIds })
+
+  publishSchoolChange(branchId)
+  revalidatePath('/school/screens')
+  return {}
+}
+
+// ── School kiosks ─────────────────────────────────────────────
+// The branch-token kiosk is untouched; these are additional, individually
+// addressed ones. mode:
+//   'all'         every department (a separately revocable kiosk)
+//   'departments' only the ticked departments
+//   'counter'     dedicated to one desk — offers that counter's departments and
+//                 pins each ticket to it, so only that desk calls the visitor
+export interface SchoolKioskResult {
+  error?: string
+  kioskToken?: string
+}
+
+const KioskSchema = z.object({
+  branchId: z.string().uuid(),
+  name: z.string().trim().min(1, 'Kiosk name is required').max(100),
+  mode: z.enum(['all', 'departments', 'counter']),
+  departmentIds: z.array(z.string().uuid()).max(100).default([]),
+  counterId: z.string().uuid().nullable().default(null),
+})
+
+export async function createSchoolKioskAction(
+  _prev: SchoolKioskResult,
+  formData: FormData
+): Promise<SchoolKioskResult> {
+  const parsed = KioskSchema.safeParse({
+    branchId: formData.get('branchId'),
+    name: formData.get('name'),
+    mode: formData.get('mode') || 'all',
+    departmentIds: formData.getAll('scopeDepartmentIds').map(String),
+    counterId: formData.get('counterId') ? String(formData.get('counterId')) : null,
+  })
+  if (!parsed.success) return { error: parsed.error.issues[0].message }
+  const { branchId, name, mode } = parsed.data
+
+  let profile
+  try {
+    profile = await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  let counterId: string | null = null
+  let departmentIds: string[] = []
+
+  if (mode === 'counter') {
+    if (!parsed.data.counterId) return { error: 'Choose the counter this kiosk belongs to' }
+    const owned = await ownedIds('school_counters', branchId, [parsed.data.counterId])
+    if (!owned || owned.length !== 1) return { error: 'Unknown counter' }
+    counterId = owned[0]
+  } else if (mode === 'departments') {
+    if (parsed.data.departmentIds.length === 0) return { error: 'Tick at least one department' }
+    const owned = await ownedIds('school_departments', branchId, parsed.data.departmentIds)
+    if (!owned) return { error: 'Unknown department' }
+    departmentIds = owned
+  }
+
+  const supabase = createSupabaseServiceClient()
+  const { data, error } = await supabase
+    .from('school_kiosks')
+    .insert({ customer_id: profile.customerId, branch_id: branchId, name, counter_id: counterId })
+    .select('id, kiosk_token')
+    .single()
+
+  if (error || !data) return { error: 'Could not create the kiosk' }
+
+  const row = data as { id: string; kiosk_token: string }
+  if (departmentIds.length > 0) await writeKioskDepartments(row.id, departmentIds)
+
+  publishSchoolChange(branchId)
+  revalidatePath('/school/screens')
+  return { kioskToken: row.kiosk_token }
+}
+
+export async function updateSchoolKioskAction(
+  kioskId: string,
+  branchId: string,
+  patch: { name?: string; departmentIds?: string[] }
+): Promise<{ error?: string }> {
+  try {
+    await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  const supabase = createSupabaseServiceClient()
+  const { data: kiosk } = await supabase
+    .from('school_kiosks').select('id, counter_id').eq('id', kioskId).eq('branch_id', branchId)
+    .maybeSingle()
+  if (!kiosk) return { error: 'Unknown kiosk' }
+
+  const name = patch.name?.trim()
+  if (patch.name !== undefined && (!name || name.length > 100)) return { error: 'Kiosk name is required' }
+
+  if (name) {
+    await supabase.from('school_kiosks')
+      .update({ name, updated_at: new Date().toISOString() }).eq('id', kioskId)
+  }
+
+  // A desk kiosk's departments are its counter's; ticking them here would be
+  // silently ignored, so refuse rather than pretend.
+  if (patch.departmentIds !== undefined) {
+    if ((kiosk as { counter_id: string | null }).counter_id) {
+      return { error: 'A desk kiosk offers whatever its counter serves — change the counter\'s departments instead' }
+    }
+    const owned = await ownedIds('school_departments', branchId, patch.departmentIds)
+    if (!owned) return { error: 'Unknown department' }
+    await writeKioskDepartments(kioskId, owned)
+  }
+
+  publishSchoolChange(branchId)
+  revalidatePath('/school/screens')
+  return {}
+}
+
+export async function regenerateSchoolKioskTokenAction(
+  kioskId: string,
+  branchId: string
+): Promise<{ error?: string; kioskToken?: string }> {
+  try {
+    await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '')
+  const { data, error } = await createSupabaseServiceClient()
+    .from('school_kiosks')
+    .update({ kiosk_token: token, updated_at: new Date().toISOString() })
+    .eq('id', kioskId).eq('branch_id', branchId)
+    .select('kiosk_token').single()
+
+  if (error || !data) return { error: 'Could not regenerate the kiosk link' }
+  revalidatePath('/school/screens')
+  return { kioskToken: (data as { kiosk_token: string }).kiosk_token }
+}
+
+export async function deactivateSchoolKioskAction(kioskId: string, branchId: string): Promise<{ error?: string }> {
+  try {
+    await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  const { error } = await createSupabaseServiceClient()
+    .from('school_kiosks')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', kioskId).eq('branch_id', branchId)
+
+  if (error) return { error: 'Could not remove the kiosk' }
+  publishSchoolChange(branchId)
+  revalidatePath('/school/screens')
+  return {}
+}
+
+export async function deactivateSchoolScreenAction(screenId: string, branchId: string): Promise<{ error?: string }> {
+  try {
+    await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  // Soft delete, like deleteScreenAction — frees a plan slot.
+  const { error } = await createSupabaseServiceClient()
+    .from('screens')
+    .update({ is_active: false })
+    .eq('id', screenId).eq('branch_id', branchId).eq('kind', 'school')
+
+  if (error) return { error: 'Could not remove the display' }
+  publishSchoolChange(branchId)
+  revalidatePath('/school/screens')
+  return {}
+}
+
+// ── One-click department desk ─────────────────────────────────
+// The common school setup: Admissions has its own window, its own calling
+// display above it and its own ticket kiosk beside it. Spelled out by hand
+// that is a counter, a department link, a scoped screen and a pinned kiosk;
+// this does all of them against one department. Quotas are checked up front so
+// a plan that can't hold the whole desk fails before anything is created.
+export interface SchoolDeskResult {
+  error?: string
+  counterId?: string
+}
+
+export async function provisionSchoolDeskAction(input: {
+  branchId: string
+  departmentId: string
+  withDisplay: boolean
+  withKiosk: boolean
+}): Promise<SchoolDeskResult> {
+  const { branchId, departmentId, withDisplay, withKiosk } = input
+
+  let profile
+  try {
+    profile = await requireBranchManager(branchId)
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : 'Access denied' }
+  }
+
+  const supabase = createSupabaseServiceClient()
+  const { data: dept } = await supabase
+    .from('school_departments')
+    .select('id, name, name_en, name_ar')
+    .eq('id', departmentId).eq('branch_id', branchId).eq('is_active', true)
+    .maybeSingle()
+  if (!dept) return { error: 'Department not found' }
+  const d = dept as { name: LocaleMap | null; name_en: string; name_ar: string }
+  const deptName: LocaleMap = d.name?.en ? d.name : ({ en: d.name_en, ar: d.name_ar } as LocaleMap)
+
+  const cq = await getSchoolCounterQuota(profile.customerId, branchId)
+  if (cq.remaining <= 0) return { error: quotaReachedMessage('counter', cq.limit) }
+  if (withDisplay) {
+    const quotaError = await screenQuotaError(profile.customerId, branchId)
+    if (quotaError) return { error: quotaError }
+  }
+
+  // The window is signed with the department it serves. English gets the word
+  // "Counter" so the TV reads "Admissions Counter"; other locales keep the
+  // department's own name rather than an untranslated suffix.
+  const counterName: LocaleMap = { ...deptName, en: `${deptName.en} Counter` } as LocaleMap
+
+  const { data: counter, error: counterError } = await supabase
+    .from('school_counters')
+    .insert({
+      customer_id: profile.customerId,
+      branch_id: branchId,
+      name: counterName,
+      ...legacyPair('name', counterName),
+    })
+    .select('id')
+    .single()
+  if (counterError || !counter) return { error: 'Could not create the counter' }
+  const counterId = (counter as { id: string }).id
+
+  const { error: linkError } = await supabase.from('school_counter_departments').insert({
+    customer_id: profile.customerId, counter_id: counterId, department_id: departmentId, preference: 0,
+  })
+  if (linkError) return { error: 'The counter was created but could not be linked to the department', counterId }
+
+  if (withDisplay) {
+    const { data: screen, error } = await supabase
+      .from('screens')
+      .insert({
+        customer_id: profile.customerId, branch_id: branchId,
+        name: `${deptName.en} display`, kind: 'school', orientation: 'landscape',
+      })
+      .select('id').single()
+    if (error || !screen) return { error: 'The counter was created but its display could not be', counterId }
+    await writeScreenScope((screen as { id: string }).id, { departmentIds: [], counterIds: [counterId] })
+  }
+
+  if (withKiosk) {
+    const { error } = await supabase.from('school_kiosks').insert({
+      customer_id: profile.customerId, branch_id: branchId,
+      name: `${deptName.en} kiosk`, counter_id: counterId,
+    })
+    if (error) return { error: 'The counter was created but its kiosk could not be', counterId }
+  }
+
+  publishSchoolChange(branchId)
+  revalidatePath('/school/counters')
+  revalidatePath('/school/screens')
+  return { counterId }
 }
 
 // ── Device pairing codes ──────────────────────────────────────
@@ -761,8 +1142,10 @@ export async function createDevicePairingCodeAction(input: {
   branchId: string
   role: 'kiosk' | 'display'
   screenId?: string
+  // A scoped kiosk's own row; absent = the branch-token kiosk.
+  kioskId?: string
 }): Promise<DevicePairingCodeResult> {
-  const { branchId, role, screenId } = input
+  const { branchId, role, screenId, kioskId } = input
   if (role !== 'kiosk' && role !== 'display') return { error: 'Invalid device role' }
   if (role === 'display' && !screenId) return { error: 'A screen is required' }
 
@@ -785,6 +1168,16 @@ export async function createDevicePairingCodeAction(input: {
       .maybeSingle()
     if (!screen) return { error: 'Unknown screen' }
   }
+  if (role === 'kiosk' && kioskId) {
+    const { data: kiosk } = await supabase
+      .from('school_kiosks')
+      .select('id')
+      .eq('id', kioskId)
+      .eq('branch_id', branchId)
+      .eq('is_active', true)
+      .maybeSingle()
+    if (!kiosk) return { error: 'Unknown kiosk' }
+  }
 
   try {
     const { code, expiresAt } = await createPairingCode({
@@ -792,6 +1185,7 @@ export async function createDevicePairingCodeAction(input: {
       branchId,
       role,
       screenId: screenId ?? null,
+      kioskId: role === 'kiosk' ? kioskId ?? null : null,
       createdBy: profile.id,
     })
     return { code, expiresAt }

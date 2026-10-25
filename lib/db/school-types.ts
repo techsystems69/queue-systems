@@ -129,6 +129,9 @@ export interface DbSchoolToken {
   branch_id: string
   department_id: string
   counter_id: string | null
+  // Set when a dedicated desk kiosk issued the token: only this counter may
+  // call it. NULL = any counter serving the department.
+  target_counter_id: string | null
   service_date: string
   number: number
   token_code: string
@@ -233,6 +236,7 @@ export interface SchoolTokenDTO {
   branchId: string
   departmentId: string
   counterId: string | null
+  targetCounterId: string | null
   serviceDate: string
   number: number
   tokenCode: string
@@ -314,11 +318,17 @@ export interface SchoolKioskFeed {
   waitingByDepartment?: Record<string, number>
   waitingTotal?: number
   issuedToday?: number
+  // Set when the feed was read through a scoped kiosk's own token, so the
+  // read action knows to record that kiosk's presence.
+  kioskId?: string
 }
 
 export interface SchoolBoardPacket {
   status: 'ok' | 'expired' | 'not-found'
   screenId?: string
+  screenName?: string
+  /** True when this screen is limited to some departments/counters. */
+  scoped?: boolean
   branchId?: string
   customerId?: string
   serviceDate?: string
@@ -350,6 +360,46 @@ export interface SchoolBoardPacket {
     audio_enabled?: boolean
   }[]
   tickers?: { id: string; message: string }[]
+}
+
+// ── Scoped devices (per-department / per-counter) ─────────────
+// Which slice of the branch a device covers. Both lists empty = the whole
+// branch, which is what every device did before scoping existed.
+export interface SchoolDeviceScope {
+  departmentIds: string[]
+  counterIds: string[]
+}
+
+export interface SchoolScreenDTO {
+  id: string
+  name: string
+  token: string
+  lastSeenAt: string | null
+  scope: SchoolDeviceScope
+}
+
+// An additionally-addressed kiosk (the branch-token kiosk is not a row).
+// `counterId` set = a dedicated desk kiosk: it offers that counter's
+// departments and pins every token it issues to that counter.
+export interface SchoolKioskDTO {
+  id: string
+  name: string
+  token: string
+  counterId: string | null
+  departmentIds: string[]
+  lastSeenAt: string | null
+}
+
+export interface DbSchoolKiosk {
+  id: string
+  customer_id: string
+  branch_id: string
+  name: string
+  kiosk_token: string
+  counter_id: string | null
+  is_active: boolean
+  last_seen_at: string | null
+  created_at: string
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
@@ -464,6 +514,7 @@ export function toSchoolTokenDTO(row: DbSchoolToken): SchoolTokenDTO {
     branchId: row.branch_id,
     departmentId: row.department_id,
     counterId: row.counter_id,
+    targetCounterId: row.target_counter_id ?? null,
     serviceDate: row.service_date,
     number: row.number,
     tokenCode: row.token_code,

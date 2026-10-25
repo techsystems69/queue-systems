@@ -34,7 +34,8 @@ export default async function SchoolKioskPage({ params }: Props) {
         <div>
           <p className="text-2xl font-bold text-slate-800">This kiosk isn&apos;t set up yet</p>
           <p className="mt-2 text-slate-500">
-            Add departments in the school manager, then reload this screen.
+            Add departments in the school manager (or, for a desk kiosk, assign departments to its
+            counter), then reload this screen.
           </p>
         </div>
       </div>
@@ -51,6 +52,7 @@ export default async function SchoolKioskPage({ params }: Props) {
       printerName={packet.printerName ?? ''}
       initialFeed={feed}
       publicTrackingEnabled={packet.publicTrackingEnabled ?? false}
+      counterName={packet.counterName}
     />
   )
 }

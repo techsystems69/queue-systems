@@ -61,3 +61,16 @@ export async function touchCounter(counterToken: string): Promise<void> {
     /* best-effort */
   }
 }
+
+/** Scoped kiosks only — the branch-token kiosk has no row to stamp. */
+export async function touchKiosk(kioskToken: string): Promise<void> {
+  if (!due('kiosk', kioskToken)) return
+  try {
+    await createSupabaseServiceClient()
+      .from('school_kiosks')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('kiosk_token', kioskToken)
+  } catch {
+    /* best-effort */
+  }
+}

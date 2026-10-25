@@ -10,7 +10,7 @@ import { Switch } from '@/components/ui/switch'
 import { DISTRIBUTOR_VERTICALS, DEFAULT_VERTICAL, verticalMeta } from '@/lib/verticals'
 import type { CustomerVertical } from '@/lib/db/types'
 import {
-  createCustomerAction, toggleCustomerActiveAction, changePlanAction,
+  createCustomerAction, toggleCustomerActiveAction, /* changePlanAction, */
   setCustomerSchoolLimitsAction, setSchoolIdentityAction,
   setCustomerHospitalLimitsAction, updateCustomerAction, deleteCustomerAction,
 } from '@/lib/actions/distributor'
@@ -139,6 +139,9 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                     to the system chosen here.
                   </p>
                 </div>
+                {/* Plan picker hidden — there are no sellable plans for now.
+                    The first plan for the chosen system is still submitted via
+                    the hidden input (createCustomerAction requires a planId).
                 <div className="space-y-1.5">
                   <Label>Plan</Label>
                   <Select value={planId} onValueChange={setPlanId}>
@@ -149,7 +152,6 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                       ))}
                     </SelectContent>
                   </Select>
-                  <input type="hidden" name="planId" value={planId} />
                   {(() => {
                     const chosen = availablePlans.find(p => p.id === planId)
                     if (vertical !== 'hospital' || !chosen || chosen.default_department_limit == null) return null
@@ -161,6 +163,8 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                     )
                   })()}
                 </div>
+                */}
+                <input type="hidden" name="planId" value={planId} />
                 <div className="space-y-1.5">
                   <Label htmlFor="businessName">Business Name</Label>
                   <Input id="businessName" name="businessName" placeholder="Acme Corp" required />
@@ -204,7 +208,9 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                   >
                     {verticalMeta(c.vertical).short.toUpperCase()}
                   </span>
+                  {/* Plan name hidden — no plans for now.
                   {c.planName && <span className="text-xs text-muted-foreground">{c.planName}</span>}
+                  */}
                   {/* What this tenant is entitled to build, per branch. The
                       tenant cannot raise it — that is the point of it living
                       here. */}
@@ -228,6 +234,7 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {/* Plan switcher hidden — no plans for now.
                 <Select
                   defaultValue={c.planId !== null ? c.planId : undefined}
                   onValueChange={async (newPlanId) => {
@@ -245,6 +252,7 @@ export function DistributorCustomersManager({ customers, plans, identities }: Pr
                     ))}
                   </SelectContent>
                 </Select>
+                */}
                 {c.vertical === 'school' && (
                   <Button
                     variant="outline"
@@ -565,7 +573,7 @@ function HospitalSetupDialog({ customer, onClose }: {
             <h3 className="text-sm font-semibold text-gray-900">Limits</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
               How many departments and rooms this hospital can run at each branch.
-              Set by the plan at signup — adjust here for a custom deal.
+              {/* Set by the plan at signup — adjust here for a custom deal. */}
             </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -595,8 +603,8 @@ function HospitalSetupDialog({ customer, onClose }: {
           <p className="text-xs text-muted-foreground">
             Lowering a number never removes anything the hospital already built — it
             just stops them adding more until they deactivate down to the new limit.
-            Add-on pricing for capacity above the plan: ₹299 / extra department
-            (includes 1 room), ₹199 / extra room.
+            {/* Add-on pricing for capacity above the plan: ₹299 / extra department
+            (includes 1 room), ₹199 / extra room. */}
           </p>
 
           <div className="flex items-center justify-between gap-4 rounded-lg border border-border px-3 py-2.5">

@@ -6,6 +6,7 @@ import {
   toSchoolTokenDTO, toSchoolActivityLogDTO, toLocaleMap,
   type SchoolSettingsDTO, type SchoolDepartmentDTO, type SchoolCounterDTO,
   type SchoolTokenDTO, type SchoolActivityLogDTO, type SchoolBoardPacket,
+  type SchoolKioskDTO, type SchoolScreenDTO, type DbSchoolKiosk,
   type SchoolDashboardStats, type SchoolDepartmentStats, type SchoolKioskFeed,
   type DbSchoolSettings, type DbSchoolDepartment, type DbSchoolCounter,
   type DbSchoolToken, type DbSchoolActivityLog, type SchoolBranchIdentity,
@@ -118,7 +119,110 @@ export const getSchoolCounterByToken = cache(async (token: string): Promise<Scho
   }
 })
 
-// ── Kiosk bootstrap (branch_token auth, no session) ───────────
+// ── Kiosk resolution (token auth, no session) ─────────────────
+// A kiosk URL carries one of two credentials:
+//   * the branch's own branch_token — the original kiosk, offers every
+//     department and issues unpinned tokens;
+//   * a school_kiosks.kiosk_token — an individually addressed kiosk that is
+//     scoped to some departments, or dedicated to one counter.
+// Everything a kiosk does (bootstrap, feed, issue, amend) resolves the token
+// here first, so scope is enforced in exactly one place.
+export interface ResolvedSchoolKiosk {
+  branchId: string
+  branchName: string
+  customerId: string
+  silentPrint: boolean
+  printerName: string
+  /** null for the branch-token kiosk. */
+  kioskId: string | null
+  kioskName: string | null
+  /** Set for a dedicated desk kiosk: tokens it issues are pinned here. */
+  counterId: string | null
+  counterName: string | null
+  /** Departments this kiosk may offer or touch; null = every department. */
+  departmentIds: string[] | null
+}
+
+export async function resolveSchoolKiosk(
+  token: string
+): Promise<ResolvedSchoolKiosk | { status: 'not-found' | 'inactive' }> {
+  const supabase = createSupabaseServiceClient()
+
+  const branchSelect = 'id, name, customer_id, is_active, silent_print, printer_name'
+  type BranchRow = {
+    id: string; name: string; customer_id: string
+    is_active: boolean; silent_print: boolean; printer_name: string
+  }
+
+  const { data: kioskRow } = await supabase
+    .from('school_kiosks')
+    .select('*')
+    .eq('kiosk_token', token)
+    .eq('is_active', true)
+    .maybeSingle()
+
+  if (kioskRow) {
+    const kiosk = kioskRow as DbSchoolKiosk
+    const { data: branch } = await supabase
+      .from('branches').select(branchSelect).eq('id', kiosk.branch_id).maybeSingle()
+    const b = branch as BranchRow | null
+    if (!b) return { status: 'not-found' }
+    if (!b.is_active) return { status: 'inactive' }
+
+    let departmentIds: string[] | null = null
+    let counterName: string | null = null
+
+    if (kiosk.counter_id) {
+      const [{ data: counter }, { data: links }] = await Promise.all([
+        supabase.from('school_counters')
+          .select('name_en, is_active').eq('id', kiosk.counter_id).maybeSingle(),
+        supabase.from('school_counter_departments')
+          .select('department_id').eq('counter_id', kiosk.counter_id)
+          .order('preference', { ascending: true }),
+      ])
+      // A desk kiosk whose desk was switched off must stop issuing: its tokens
+      // are pinned to a counter nobody is sitting at.
+      if (!counter || !(counter as { is_active: boolean }).is_active) {
+        return { status: 'inactive' }
+      }
+      counterName = (counter as { name_en: string }).name_en
+      departmentIds = ((links ?? []) as { department_id: string }[]).map((l) => l.department_id)
+    } else {
+      const { data: links } = await supabase
+        .from('school_kiosk_departments').select('department_id').eq('kiosk_id', kiosk.id)
+      const ids = ((links ?? []) as { department_id: string }[]).map((l) => l.department_id)
+      departmentIds = ids.length > 0 ? ids : null
+    }
+
+    return {
+      branchId: b.id, branchName: b.name, customerId: b.customer_id,
+      silentPrint: b.silent_print, printerName: b.printer_name,
+      kioskId: kiosk.id, kioskName: kiosk.name,
+      counterId: kiosk.counter_id, counterName,
+      departmentIds,
+    }
+  }
+
+  const { data: branch } = await supabase
+    .from('branches').select(branchSelect).eq('branch_token', token).maybeSingle()
+  const b = branch as BranchRow | null
+  if (!b) return { status: 'not-found' }
+  if (!b.is_active) return { status: 'inactive' }
+
+  return {
+    branchId: b.id, branchName: b.name, customerId: b.customer_id,
+    silentPrint: b.silent_print, printerName: b.printer_name,
+    kioskId: null, kioskName: null, counterId: null, counterName: null,
+    departmentIds: null,
+  }
+}
+
+/** True when `departmentId` is something this kiosk is allowed to offer. */
+export function kioskOffers(kiosk: ResolvedSchoolKiosk, departmentId: string): boolean {
+  return kiosk.departmentIds === null || kiosk.departmentIds.includes(departmentId)
+}
+
+// ── Kiosk bootstrap ───────────────────────────────────────────
 export interface SchoolKioskPacket {
   status: 'ok' | 'not-found' | 'inactive'
   branchId?: string
@@ -132,40 +236,48 @@ export interface SchoolKioskPacket {
   // switch) — see lib/dal/school-limits.ts. The app only prints a QR when
   // this is true.
   publicTrackingEnabled?: boolean
+  // Set for a kiosk that is not the branch-wide one. `counterName` is present
+  // for a dedicated desk kiosk, so the screen can say which window it feeds.
+  kioskName?: string
+  counterName?: string
+  scoped?: boolean
 }
 
-export const getSchoolKioskPacket = cache(async (branchToken: string): Promise<SchoolKioskPacket> => {
-  const supabase = createSupabaseServiceClient()
-  const { data: branch } = await supabase
-    .from('branches')
-    .select('id, name, customer_id, is_active, silent_print, printer_name')
-    .eq('branch_token', branchToken)
-    .maybeSingle()
+export const getSchoolKioskPacket = cache(async (kioskToken: string): Promise<SchoolKioskPacket> => {
+  const kiosk = await resolveSchoolKiosk(kioskToken)
+  if ('status' in kiosk) return { status: kiosk.status }
 
-  if (!branch) return { status: 'not-found' }
-
-  const row = branch as {
-    id: string; name: string; customer_id: string
-    is_active: boolean; silent_print: boolean; printer_name: string
-  }
-  if (!row.is_active) return { status: 'inactive' }
-
-  const [departments, settings, publicTrackingEnabled] = await Promise.all([
-    getSchoolDepartments(row.id, { activeOnly: true }),
-    getSchoolSettings(row.id),
-    getSchoolPublicTrackingEnabled(row.customer_id, row.id),
+  const [allDepartments, settings, publicTrackingEnabled] = await Promise.all([
+    getSchoolDepartments(kiosk.branchId, { activeOnly: true }),
+    getSchoolSettings(kiosk.branchId),
+    getSchoolPublicTrackingEnabled(kiosk.customerId, kiosk.branchId),
   ])
+
+  // Counter-linked order (the manager's preference) is kept for a desk kiosk
+  // by walking the id list; otherwise the branch's display order stands.
+  const departments = kiosk.departmentIds === null
+    ? allDepartments
+    : kiosk.counterId
+      ? kiosk.departmentIds
+          .map((id) => allDepartments.find((d) => d.id === id))
+          .filter((d): d is SchoolDepartmentDTO => d !== undefined)
+      : allDepartments.filter((d) => kiosk.departmentIds!.includes(d.id))
 
   return {
     status: 'ok',
-    branchId: row.id,
-    branchName: row.name,
-    customerId: row.customer_id,
+    branchId: kiosk.branchId,
+    branchName: kiosk.branchName,
+    customerId: kiosk.customerId,
     departments,
     settings,
-    silentPrint: row.silent_print,
-    printerName: row.printer_name,
+    silentPrint: kiosk.silentPrint,
+    printerName: kiosk.printerName,
     publicTrackingEnabled,
+    ...(kiosk.kioskId && {
+      kioskName: kiosk.kioskName ?? undefined,
+      counterName: kiosk.counterName ?? undefined,
+      scoped: true,
+    }),
   }
 })
 
@@ -345,45 +457,68 @@ export async function getSchoolKioskFeed(branchToken: string): Promise<SchoolKio
 }
 
 async function loadSchoolKioskFeed(
-  branchToken: string
+  kioskToken: string
 ): Promise<{ value: SchoolKioskFeed; branchId?: string; cacheable?: boolean }> {
   const supabase = createSupabaseServiceClient()
 
-  const { data: branch } = await supabase
-    .from('branches')
-    .select('id, is_active')
-    .eq('branch_token', branchToken)
-    .maybeSingle()
+  const kiosk = await resolveSchoolKiosk(kioskToken)
+  if ('status' in kiosk) return { value: { status: 'not-found' }, cacheable: false }
+  const branchId = kiosk.branchId
 
-  if (!branch || !(branch as { is_active: boolean }).is_active) {
-    return { value: { status: 'not-found' }, cacheable: false }
+  // A scoped kiosk's rail and queue depths cover only what it offers — and a
+  // desk kiosk only the tokens pinned to its counter. A scope that resolved to
+  // no departments has nothing to count.
+  if (kiosk.departmentIds !== null && kiosk.departmentIds.length === 0) {
+    return {
+      branchId,
+      value: {
+        status: 'ok', serviceDate: await getSchoolServiceDate(branchId),
+        recent: [], waitingByDepartment: {}, waitingTotal: 0, issuedToday: 0,
+        kioskId: kiosk.kioskId ?? undefined,
+      },
+    }
   }
-  const branchId = (branch as { id: string }).id
 
   const serviceDate = await getSchoolServiceDate(branchId)
 
+  // PostgREST's builder generics blow up tsc when threaded through a helper,
+  // so the filter is applied to an untyped builder.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const scope = (q: any) => {
+    let out = q
+    if (kiosk.departmentIds !== null) out = out.in('department_id', kiosk.departmentIds)
+    if (kiosk.counterId) out = out.eq('target_counter_id', kiosk.counterId)
+    return out
+  }
+
   const [{ data: recent }, { data: waiting }, { count: issuedToday }] = await Promise.all([
-    supabase
-      .from('school_tokens')
-      .select('*')
-      .eq('branch_id', branchId)
-      .eq('service_date', serviceDate)
+    scope(
+      supabase
+        .from('school_tokens')
+        .select('*')
+        .eq('branch_id', branchId)
+        .eq('service_date', serviceDate)
+    )
       .order('joined_at', { ascending: false })
       .limit(KIOSK_RECENT_LIMIT),
     // Only the department column: this is a depth count per tile, and pulling
     // whole rows for a queue that can be hundreds long is wasted bandwidth on
     // a 6-second poll.
-    supabase
-      .from('school_tokens')
-      .select('department_id')
-      .eq('branch_id', branchId)
-      .eq('service_date', serviceDate)
-      .in('status', ['waiting', 'held']),
-    supabase
-      .from('school_tokens')
-      .select('*', { count: 'exact', head: true })
-      .eq('branch_id', branchId)
-      .eq('service_date', serviceDate),
+    scope(
+      supabase
+        .from('school_tokens')
+        .select('department_id')
+        .eq('branch_id', branchId)
+        .eq('service_date', serviceDate)
+        .in('status', ['waiting', 'held'])
+    ),
+    scope(
+      supabase
+        .from('school_tokens')
+        .select('*', { count: 'exact', head: true })
+        .eq('branch_id', branchId)
+        .eq('service_date', serviceDate)
+    ),
   ])
 
   const waitingRows = (waiting ?? []) as { department_id: string }[]
@@ -401,6 +536,7 @@ async function loadSchoolKioskFeed(
       waitingByDepartment,
       waitingTotal: waitingRows.length,
       issuedToday: issuedToday ?? 0,
+      kioskId: kiosk.kioskId ?? undefined,
     },
   }
 }
@@ -464,6 +600,7 @@ async function loadSchoolCounterView(
             .eq('service_date', serviceDate)
             .in('department_id', departmentIds)
             .in('status', ['waiting', 'held'])
+            .or(`target_counter_id.is.null,target_counter_id.eq.${c.id}`)
             .order('joined_at', { ascending: true })
             .limit(40)
         : Promise.resolve({ data: [] }),
@@ -475,6 +612,7 @@ async function loadSchoolCounterView(
             .eq('service_date', serviceDate)
             .in('department_id', departmentIds)
             .eq('status', 'no-show')
+            .or(`target_counter_id.is.null,target_counter_id.eq.${c.id}`)
             .order('called_at', { ascending: false })
             .limit(20)
         : Promise.resolve({ data: [] }),
@@ -577,3 +715,75 @@ export async function getSchoolBranchIdentities(
   }
   return result
 }
+
+
+// ── Scoped devices (manager view) ─────────────────────────────
+export const getSchoolScreens = cache(async (branchId: string): Promise<SchoolScreenDTO[]> => {
+  const supabase = createSupabaseServiceClient()
+  const { data: screens } = await supabase
+    .from('screens')
+    .select('id, name, screen_token, last_seen_at')
+    .eq('branch_id', branchId)
+    .eq('kind', 'school')
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+
+  const rows = (screens ?? []) as { id: string; name: string; screen_token: string; last_seen_at: string | null }[]
+  if (rows.length === 0) return []
+
+  const ids = rows.map((r) => r.id)
+  const [{ data: depts }, { data: counters }] = await Promise.all([
+    supabase.from('school_screen_departments').select('screen_id, department_id').in('screen_id', ids),
+    supabase.from('school_screen_counters').select('screen_id, counter_id').in('screen_id', ids),
+  ])
+
+  const group = <K extends string>(list: unknown, key: K) => {
+    const map = new Map<string, string[]>()
+    for (const r of (list ?? []) as ({ screen_id: string } & Record<K, string>)[]) {
+      map.set(r.screen_id, [...(map.get(r.screen_id) ?? []), r[key]])
+    }
+    return map
+  }
+  const byDept = group(depts, 'department_id')
+  const byCounter = group(counters, 'counter_id')
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    token: r.screen_token,
+    lastSeenAt: r.last_seen_at,
+    scope: { departmentIds: byDept.get(r.id) ?? [], counterIds: byCounter.get(r.id) ?? [] },
+  }))
+})
+
+export const getSchoolKiosks = cache(async (branchId: string): Promise<SchoolKioskDTO[]> => {
+  const supabase = createSupabaseServiceClient()
+  const { data } = await supabase
+    .from('school_kiosks')
+    .select('*')
+    .eq('branch_id', branchId)
+    .eq('is_active', true)
+    .order('created_at', { ascending: true })
+
+  const rows = (data ?? []) as DbSchoolKiosk[]
+  if (rows.length === 0) return []
+
+  const { data: links } = await supabase
+    .from('school_kiosk_departments')
+    .select('kiosk_id, department_id')
+    .in('kiosk_id', rows.map((r) => r.id))
+
+  const byKiosk = new Map<string, string[]>()
+  for (const l of (links ?? []) as { kiosk_id: string; department_id: string }[]) {
+    byKiosk.set(l.kiosk_id, [...(byKiosk.get(l.kiosk_id) ?? []), l.department_id])
+  }
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    token: r.kiosk_token,
+    counterId: r.counter_id,
+    departmentIds: byKiosk.get(r.id) ?? [],
+    lastSeenAt: r.last_seen_at,
+  }))
+})

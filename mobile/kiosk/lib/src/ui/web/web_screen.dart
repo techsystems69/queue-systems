@@ -71,6 +71,18 @@ class _WebScreenState extends State<WebScreen> {
     return controller;
   }
 
+  @override
+  void didUpdateWidget(WebScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The controller is built once, so switching service from Settings (e.g.
+    // Order counter → Kitchen) reuses this State with a new url — load it, or
+    // the old counter stays on screen.
+    if (oldWidget.url != widget.url) {
+      _retryTimer?.cancel();
+      _controller.loadRequest(Uri.parse(widget.url));
+    }
+  }
+
   void _scheduleRetry() {
     _retryTimer?.cancel();
     _retryTimer = Timer(const Duration(seconds: 5), () {

@@ -81,7 +81,43 @@ Registered by `PWARegister` with `updateViaCache: "none"` so stale SW files are 
 | `activate` | Deletes old cache versions, calls `clients.claim()` |
 | `fetch` | Stale-while-revalidate (see above) |
 | `push` | Shows a system notification (`data.title`, `data.body`, `data.icon`) |
-| `notificationclick` | Opens `/dashboard` |
+| `notificationclick` | Refocuses the open window at `notification.data.url` (or opens it); defaults to `/dashboard`. Counter alerts set `data.url` to the counter's own page. |
+
+## Counter push notifications
+
+Kitchen, Billing and Delivery counters are paged when an order becomes work for them — even with the browser closed or the screen off.
+
+```
+queue_entries INSERT/UPDATE ──▶ trigger notify_counter_push() ──▶ pg_net POST
+        ──▶ /api/push/notify (x-push-secret) ──▶ after(): wait 1.5s, re-read entry
+        ──▶ lib/counterNotifications.ts picks counter types ──▶ web-push ──▶ browser push service
+        ──▶ public/sw.js `push`: skipped if a visible page's operator is attentive, else shown
+```
+
+| Piece | File |
+|---|---|
+| Who gets paged (shared with in-page alerts) | [lib/counterNotifications.ts](../lib/counterNotifications.ts) |
+| Table, trigger, config | [supabase/migrations/20261026_counter_push_notifications.sql](../supabase/migrations/20261026_counter_push_notifications.sql) |
+| Webhook receiver | [app/api/push/notify/route.ts](../app/api/push/notify/route.ts) |
+| Sender (prunes 404/410 subscriptions) | [lib/push/sendCounterPush.ts](../lib/push/sendCounterPush.ts) |
+| Subscribe + save | [lib/push/client.ts](../lib/push/client.ts), [lib/actions/push.ts](../lib/actions/push.ts) |
+| In-page alerts (chime, title flash, idle detection) | [lib/hooks/useCounterNotifications.ts](../lib/hooks/useCounterNotifications.ts) |
+
+### Setup (once per deployment + database)
+
+1. Env vars on the Vercel project: `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` (`mailto:` address), `PUSH_WEBHOOK_SECRET`. Generate keys with `npx web-push generate-vapid-keys`. Use the same key pair for a deployment's lifetime — rotating it invalidates every saved subscription.
+2. Run the migration on that deployment's Supabase database.
+3. Point the database at the deployment:
+   ```sql
+   insert into push_config (key, value) values
+     ('notify_url',     'https://<deployment>/api/push/notify'),
+     ('webhook_secret', '<PUSH_WEBHOOK_SECRET>')
+   on conflict (key) do update set value = excluded.value;
+   ```
+   Delete those two rows to switch pushes off.
+4. On each counter tablet, open the counter page and tap **Enable alerts** once.
+
+Platform notes: Chrome on Windows/Android/macOS works in a normal tab or installed PWA; iPhone/iPad need the site added to the Home Screen (iOS 16.4+). On Android, set the browser's battery use to Unrestricted or pushes can be delayed.
 
 Cache key: `vibequeue-v1`. Bump this string in `sw.js` to invalidate all cached assets on the next deploy.
 

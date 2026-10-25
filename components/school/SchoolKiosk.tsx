@@ -43,6 +43,9 @@ interface Props {
   // Gates the QR on the printed ticket only; nothing else on the kiosk reads
   // this.
   publicTrackingEnabled: boolean
+  // Set for a desk kiosk: the window its tickets are pinned to. Shown under the
+  // school name so the person at the kiosk knows which desk they're queueing for.
+  counterName?: string
 }
 
 const FEED_POLL_MS = 20000
@@ -201,7 +204,7 @@ interface PrintJob {
  */
 export function SchoolKiosk({
   branchToken, branchName, departments, settings, silentPrintEnabled, printerName,
-  initialFeed, publicTrackingEnabled,
+  initialFeed, publicTrackingEnabled, counterName,
 }: Props) {
   const languages = coerceLocales(settings?.languages)
   const [lang, setLang] = useState<Locale>(languages[0])
@@ -495,7 +498,9 @@ export function SchoolKiosk({
         )}
         <div className="min-w-0 flex-1">
           <p className="truncate text-xl font-bold md:text-2xl">{schoolName}</p>
-          <p className="truncate text-sm text-slate-400">{branchName}</p>
+          <p className="truncate text-sm text-slate-400">
+            {counterName ? `${branchName} · ${counterName}` : branchName}
+          </p>
         </div>
 
         <div className="hidden shrink-0 items-center gap-2 sm:flex">

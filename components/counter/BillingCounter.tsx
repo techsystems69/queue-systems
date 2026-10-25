@@ -4,6 +4,7 @@ import { useTransition } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useRealtimeQueue } from '@/lib/hooks/useRealtimeQueue'
 import { useCounterHeartbeat } from '@/lib/hooks/useCounterPresence'
+import { useCounterNotifications } from '@/lib/hooks/useCounterNotifications'
 import {
   counterCallNextAction,
   counterCallEntryAction,
@@ -13,6 +14,7 @@ import {
 import { Receipt, SkipForward, CheckCircle2, ChefHat, BellRing, Clock } from 'lucide-react'
 import { toast } from 'sonner'
 import { CounterPresenceAlert } from '@/components/counter/CounterPresenceAlert'
+import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
 import { ConsoleFrame, ConsoleLoading, TaskSplit, ElapsedPill, ConfirmCancel, useNow, minutesSince } from '@/components/counter/console'
 import type { QueueEntryDTO } from '@/lib/db/types'
 
@@ -34,6 +36,7 @@ export function BillingCounter({ branchId, counterId, counterName, counterToken,
   const { entries, isPaused, isLoading } = useRealtimeQueue(branchId)
   const [pending, startTransition] = useTransition()
   useCounterHeartbeat(counterToken, presenceEnabled)
+  const alerts = useCounterNotifications({ counterType: 'billing', counterToken, counterName, entries, isLoading })
   const now = useNow()
 
   const readyForBilling = entries
@@ -86,7 +89,12 @@ export function BillingCounter({ branchId, counterId, counterName, counterToken,
       icon={Receipt}
       name={counterName}
       typeLabel="Billing · Cashier Station"
-      banner={<CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />}
+      banner={
+        <>
+          <CounterAlertBar unseenCount={alerts.unseenCount} needsSetup={alerts.needsSetup} onEnable={alerts.enableAlerts} onAcknowledge={alerts.acknowledge} />
+          <CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />
+        </>
+      }
     >
       {isLoading ? (
         <ConsoleLoading icon={Receipt} />

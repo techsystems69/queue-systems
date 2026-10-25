@@ -29,9 +29,11 @@ interface Props {
   // How many counters this branch may run, set by the provider. The server
   // enforces it; this only keeps the UI honest about it.
   quota: SchoolQuota
+  // Scoped displays / desk kiosks that cover each counter, by counter id.
+  devices?: Record<string, { displays: number; kiosks: number }>
 }
 
-export function SchoolCountersManager({ branchId, initialCounters, departments, quota }: Props) {
+export function SchoolCountersManager({ branchId, initialCounters, departments, quota, devices = {} }: Props) {
   const [counters, setCounters] = useState(initialCounters)
   // Derived from state so activating and deactivating updates the allowance
   // without a reload.
@@ -199,6 +201,16 @@ export function SchoolCountersManager({ branchId, initialCounters, departments, 
                     ))
                   )}
                 </div>
+
+                <p className="text-[11px] text-muted-foreground">
+                  {(() => {
+                    const d = devices[counter.id] ?? { displays: 0, kiosks: 0 }
+                    const part = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+                    return d.displays + d.kiosks === 0
+                      ? 'No display or kiosk of its own — it shows on the main ones. Manage under Devices.'
+                      : `Own ${part(d.displays, 'calling display')} · ${part(d.kiosks, 'ticket kiosk')}`
+                  })()}
+                </p>
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Button variant="outline" size="sm" onClick={() => setAssigning(counter)}>

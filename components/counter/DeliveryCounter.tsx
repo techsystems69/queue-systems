@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useRealtimeQueue } from '@/lib/hooks/useRealtimeQueue'
 import { useCounterHeartbeat } from '@/lib/hooks/useCounterPresence'
+import { useCounterNotifications } from '@/lib/hooks/useCounterNotifications'
 import {
   counterCallEntryAction,
   counterCompleteEntryAction,
@@ -14,6 +15,7 @@ import { Truck, Phone, CheckCircle2, PackageCheck, ChefHat, SkipForward, BellRin
 import { toast } from 'sonner'
 import { formatTime } from '@/lib/queueUtils'
 import { CounterPresenceAlert } from '@/components/counter/CounterPresenceAlert'
+import { CounterAlertBar } from '@/components/counter/CounterAlertBar'
 import { ConsoleFrame, ConsoleLoading, TaskSplit, ElapsedPill, useNow, minutesSince, useTapGuard } from '@/components/counter/console'
 import type { QueueEntryDTO } from '@/lib/db/types'
 
@@ -40,6 +42,7 @@ export function DeliveryCounter({ branchId, counterId, counterName, counterToken
   const searchBarRef = useRef<HTMLDivElement>(null)
   const sheetRef = useRef<HTMLDivElement>(null)
   useCounterHeartbeat(counterToken, presenceEnabled)
+  const alerts = useCounterNotifications({ counterType: 'delivery', counterToken, counterName, entries, isLoading })
   const now = useNow()
 
   // Bottom sheet dismisses on outside tap via a plain document listener
@@ -143,7 +146,12 @@ export function DeliveryCounter({ branchId, counterId, counterName, counterToken
       icon={Truck}
       name={counterName}
       typeLabel="Delivery · Dispatch Station"
-      banner={<CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />}
+      banner={
+        <>
+          <CounterAlertBar unseenCount={alerts.unseenCount} needsSetup={alerts.needsSetup} onEnable={alerts.enableAlerts} onAcknowledge={alerts.acknowledge} />
+          <CounterPresenceAlert branchId={branchId} selfCounterId={counterId} enabled={presenceEnabled} />
+        </>
+      }
     >
       {isLoading ? (
         <ConsoleLoading icon={Truck} />

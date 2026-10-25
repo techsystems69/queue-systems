@@ -18,6 +18,16 @@ export function useSchoolBoard(screenToken: string, initial: SchoolBoardPacket) 
   const [packet, setPacket] = useState(initial)
   const [lastCall, setLastCall] = useState<BoardCallEvent | null>(null)
   const callKey = useRef(0)
+  // The windows this board lists, read from inside the broadcast handler. A ref
+  // rather than a dependency: the subscription must not tear down and rejoin
+  // every time a poll replaces the packet.
+  const scopeRef = useRef<{ scoped: boolean; counterIds: Set<string> }>({ scoped: false, counterIds: new Set() })
+  useEffect(() => {
+    scopeRef.current = {
+      scoped: packet.scoped === true,
+      counterIds: new Set((packet.counters ?? []).map((c) => c.id)),
+    }
+  }, [packet.scoped, packet.counters])
 
   const refresh = useCallback(async () => {
     const next = await fetchSchoolBoardAction(screenToken)
@@ -52,6 +62,14 @@ export function useSchoolBoard(screenToken: string, initial: SchoolBoardPacket) 
       // on one would blank the overlay on a board nobody is standing at. Still
       // re-read, because whatever produced it did change the board's state.
       if (!payload?.tokenCode) {
+        refresh()
+        return
+      }
+      // A department/counter display only flashes and speaks its own windows'
+      // calls. Signals from an older server carry no counterId and are treated
+      // as in scope, which is the pre-scoping behaviour.
+      const { scoped, counterIds } = scopeRef.current
+      if (scoped && payload.counterId && !counterIds.has(payload.counterId)) {
         refresh()
         return
       }

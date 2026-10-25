@@ -393,3 +393,29 @@ Several pre-existing files were rewritten CRLF → LF, inflating the diff:
 - `proxy.ts` — 69+/59- raw, **11+/1- real**
 
 Use `git diff --ignore-cr-at-eol` to see the true diff.
+
+---
+
+# Addendum 2026-10-25 — per-department / per-counter kiosks and displays
+
+Migration `supabase/migrations/20261025_school_scoped_devices.sql` (requires
+`20260904_school_content_locale_jsonb` and `20260906_school_token_locale`).
+
+- **Displays** (`screens`, kind `school`) take an optional scope: `school_screen_departments`
+  and `school_screen_counters`. A scoped board lists only the counters in scope (named
+  counters + counters serving a named department), counts only those departments' queues,
+  and ignores broadcast calls for other counters (`SchoolCallSignal.counterId`). No scope
+  rows = whole school, exactly as before.
+- **Kiosks**: the branch-token kiosk is unchanged. `school_kiosks` adds individually
+  addressed kiosks with their own `kiosk_token`, either scoped to some departments
+  (`school_kiosk_departments`) or **dedicated to one counter** (`counter_id`). A desk
+  kiosk offers that counter's departments and pins each ticket via
+  `school_tokens.target_counter_id`; `call_next_school_token` skips tokens pinned to
+  another counter. `/api/kiosk/[token]/*` and `/school/kiosk/[token]` resolve either token
+  through `resolveSchoolKiosk()` (lib/dal/school.ts), so the Flutter app needs no change.
+- Deactivating a counter returns its pinned waiting tokens to the shared pool; a desk kiosk
+  whose counter is inactive reports "inactive" until the counter is reactivated.
+- **Departments → Set up desk** creates counter + scoped display + desk kiosk in one go
+  (`provisionSchoolDeskAction`); quotas are checked first.
+- Not applied to any database yet. Scoped displays count against the plan's
+  `max_screens_per_branch`.

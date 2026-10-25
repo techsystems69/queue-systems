@@ -17,6 +17,8 @@ export interface CreatePairingCodeInput {
   branchId: string
   role: 'kiosk' | 'display'
   screenId?: string | null
+  // A scoped school kiosk (school_kiosks.id); null = the branch-token kiosk.
+  kioskId?: string | null
   createdBy?: string | null
 }
 
@@ -49,6 +51,10 @@ export async function createPairingCode(input: CreatePairingCodeInput): Promise<
     .eq('role', input.role)
   if (input.role === 'display' && input.screenId) prior.eq('screen_id', input.screenId)
   else prior.is('screen_id', null)
+  if (input.role === 'kiosk') {
+    if (input.kioskId) prior.eq('kiosk_id', input.kioskId)
+    else prior.is('kiosk_id', null)
+  }
   await prior
 
   const expiresAt = new Date(Date.now() + CODE_TTL_MINUTES * 60_000).toISOString()
@@ -61,6 +67,7 @@ export async function createPairingCode(input: CreatePairingCodeInput): Promise<
       branch_id: input.branchId,
       role: input.role,
       screen_id: input.role === 'display' ? input.screenId ?? null : null,
+      kiosk_id: input.role === 'kiosk' ? input.kioskId ?? null : null,
       created_by: input.createdBy ?? null,
       expires_at: expiresAt,
     })
@@ -93,7 +100,7 @@ export async function redeemPairingCode(rawCode: string, ip?: string): Promise<R
   const supabase = createSupabaseServiceClient()
   const { data } = await supabase
     .from('device_pairing_codes')
-    .select('id, branch_id, screen_id, role, expires_at')
+    .select('id, branch_id, screen_id, kiosk_id, role, expires_at')
     .eq('code', code)
     .is('consumed_at', null)
     .maybeSingle()
@@ -103,6 +110,7 @@ export async function redeemPairingCode(rawCode: string, ip?: string): Promise<R
     id: string
     branch_id: string
     screen_id: string | null
+    kiosk_id: string | null
     role: 'kiosk' | 'display'
     expires_at: string
   }
@@ -120,6 +128,24 @@ export async function redeemPairingCode(rawCode: string, ip?: string): Promise<R
     .select('id')
     .maybeSingle()
   if (!claimed) return { status: 'not-found' }
+
+  if (row.role === 'kiosk' && row.kiosk_id) {
+    const { data: kiosk } = await supabase
+      .from('school_kiosks')
+      .select('kiosk_token, name, is_active, branches(is_active)')
+      .eq('id', row.kiosk_id)
+      .maybeSingle()
+    const k = kiosk as {
+      kiosk_token: string
+      name: string
+      is_active: boolean
+      branches: { is_active: boolean } | { is_active: boolean }[] | null
+    } | null
+    const branchRow = k && (Array.isArray(k.branches) ? k.branches[0] : k.branches)
+    if (!k || !k.is_active || !branchRow?.is_active) return { status: 'not-found' }
+    // Scoped kiosks only exist for schools.
+    return { status: 'ok', role: 'kiosk', token: k.kiosk_token, name: k.name, vertical: 'school' }
+  }
 
   if (row.role === 'kiosk') {
     const { data: branch } = await supabase

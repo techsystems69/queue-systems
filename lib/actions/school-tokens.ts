@@ -8,6 +8,7 @@ import {
 import { isRegionLocale, type LocaleMap } from '@/lib/region'
 import { publishSchoolChange } from '@/lib/cache/schoolCache'
 import { touchCounter } from '@/lib/cache/presence'
+import { resolveSchoolKiosk, kioskOffers, type ResolvedSchoolKiosk } from '@/lib/dal/school'
 
 export interface SchoolTokenResult {
   token?: SchoolTokenDTO
@@ -52,6 +53,11 @@ async function verifySchoolCounter(token: string): Promise<VerifiedCounter | nul
 // Same mechanism as broadcastDisplaySignal in lib/actions/counters.ts.
 export interface SchoolCallSignal {
   tokenCode: string
+  // Which window and department the call belongs to. A scoped display uses
+  // these to ignore calls for counters it doesn't list — without them every
+  // board in the branch would flash and speak every call.
+  counterId: string
+  departmentId: string
   counterEn: string
   counterAr: string
   departmentEn: string
@@ -199,30 +205,31 @@ export async function schoolIssueTokenAction(
   // the tracker falls back to the base locale.
   locale?: string | null
 ): Promise<SchoolTokenResult> {
+  const kiosk = await resolveSchoolKiosk(branchToken)
+  if ('status' in kiosk) {
+    return { error: kiosk.status === 'inactive' ? 'This kiosk is not active' : 'Kiosk is not registered' }
+  }
+  // A scoped kiosk may only mint what it offers; the client's department id is
+  // a choice, never an entitlement.
+  if (!kioskOffers(kiosk, departmentId)) {
+    return { error: 'That department is not offered at this kiosk' }
+  }
+
   const supabase = createSupabaseServiceClient()
-
-  const { data: branch } = await supabase
-    .from('branches')
-    .select('id, is_active')
-    .eq('branch_token', branchToken)
-    .maybeSingle()
-
-  if (!branch) return { error: 'Kiosk is not registered' }
-  if (!(branch as { is_active: boolean }).is_active) return { error: 'This branch is not active' }
-
   const { data, error } = await supabase.rpc('claim_school_token', {
-    p_branch_id: (branch as { id: string }).id,
+    p_branch_id: kiosk.branchId,
     p_department_id: departmentId,
     p_source: 'kiosk',
     p_is_priority: isPriority,
     p_locale: isRegionLocale(locale) ? locale : null,
+    p_target_counter_id: kiosk.counterId,
   })
 
   if (error || !data) return { error: 'Could not issue a token. Please ask for assistance.' }
 
   // The activity log is written inside claim_school_token, so it doesn't pass
   // through logSchoolActivity — invalidate here.
-  publishSchoolChange((branch as { id: string }).id)
+  publishSchoolChange(kiosk.branchId)
 
   const row = data as DbSchoolToken
   return { token: toSchoolTokenDTO(row), waitingAhead: await countWaitingAhead(supabase, row) }
@@ -237,25 +244,21 @@ export async function schoolIssueTokenAction(
 interface VerifiedBranch {
   id: string
   customer_id: string
+  kiosk: ResolvedSchoolKiosk
 }
 
 async function verifySchoolBranch(branchToken: string): Promise<VerifiedBranch | null> {
-  const supabase = createSupabaseServiceClient()
-  const { data } = await supabase
-    .from('branches')
-    .select('id, customer_id, is_active')
-    .eq('branch_token', branchToken)
-    .maybeSingle()
-
-  if (!data || !(data as { is_active: boolean }).is_active) return null
-  return data as VerifiedBranch
+  const kiosk = await resolveSchoolKiosk(branchToken)
+  if ('status' in kiosk) return null
+  return { id: kiosk.branchId, customer_id: kiosk.customerId, kiosk }
 }
 
 // Scoped on every axis the client could otherwise choose for itself: the row
 // must belong to this branch and to today's service date, so a leaked id from
 // yesterday or from another school is not addressable.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function loadKioskToken(supabase: any, branchId: string, tokenId: string) {
+async function loadKioskToken(supabase: any, branch: VerifiedBranch, tokenId: string) {
+  const branchId = branch.id
   const { data: serviceDate } = await supabase.rpc('school_service_date', {
     p_branch_id: branchId,
   })
@@ -267,7 +270,12 @@ async function loadKioskToken(supabase: any, branchId: string, tokenId: string) 
     .eq('service_date', serviceDate as string)
     .maybeSingle()
 
-  return (data as DbSchoolToken | null) ?? null
+  const row = (data as DbSchoolToken | null) ?? null
+  // A scoped kiosk can only amend tokens it could have issued: its departments,
+  // and for a desk kiosk only the tokens pinned to its own counter.
+  if (row && !kioskOffers(branch.kiosk, row.department_id)) return null
+  if (row && branch.kiosk.counterId && row.target_counter_id !== branch.kiosk.counterId) return null
+  return row
 }
 
 // 'waiting' and 'held' are the only states still owned by the pool. Anything
@@ -286,7 +294,7 @@ export async function schoolKioskCancelTokenAction(
   if (!branch) return { error: 'Kiosk is not registered' }
 
   const supabase = createSupabaseServiceClient()
-  const row = await loadKioskToken(supabase, branch.id, tokenId)
+  const row = await loadKioskToken(supabase, branch, tokenId)
   if (!row) return { error: 'That token was not issued today' }
 
   const blocked = amendable(row)
@@ -327,7 +335,7 @@ export async function schoolKioskSetPriorityAction(
   if (!branch) return { error: 'Kiosk is not registered' }
 
   const supabase = createSupabaseServiceClient()
-  const row = await loadKioskToken(supabase, branch.id, tokenId)
+  const row = await loadKioskToken(supabase, branch, tokenId)
   if (!row) return { error: 'That token was not issued today' }
 
   const blocked = amendable(row)
@@ -362,12 +370,15 @@ export async function schoolKioskMoveTokenAction(
   if (!branch) return { error: 'Kiosk is not registered' }
 
   const supabase = createSupabaseServiceClient()
-  const row = await loadKioskToken(supabase, branch.id, tokenId)
+  const row = await loadKioskToken(supabase, branch, tokenId)
   if (!row) return { error: 'That token was not issued today' }
 
   const blocked = amendable(row)
   if (blocked) return { error: blocked }
   if (row.department_id === targetDepartmentId) return { token: toSchoolTokenDTO(row) }
+  if (!kioskOffers(branch.kiosk, targetDepartmentId)) {
+    return { error: 'That department is not offered at this kiosk' }
+  }
 
   const { data: dept } = await supabase
     .from('school_departments')
@@ -422,7 +433,7 @@ export async function schoolKioskWaitingAheadAction(
   if (!branch) return { error: 'Kiosk is not registered' }
 
   const supabase = createSupabaseServiceClient()
-  const row = await loadKioskToken(supabase, branch.id, tokenId)
+  const row = await loadKioskToken(supabase, branch, tokenId)
   if (!row) return { error: 'That token was not issued today' }
 
   return { waitingAhead: await countWaitingAhead(supabase, row) }
@@ -453,6 +464,8 @@ export async function schoolCallNextAction(counterToken: string): Promise<School
 
   await publishSchoolCall(counter.branch_id, 'token-called', {
     tokenCode: token.tokenCode,
+    counterId: counter.id,
+    departmentId: token.departmentId,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
     departmentEn: dept.en,
@@ -635,6 +648,8 @@ export async function schoolCallCodeAction(
 
   await publishSchoolCall(counter.branch_id, 'token-called', {
     tokenCode: token.tokenCode,
+    counterId: counter.id,
+    departmentId: token.departmentId,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
     departmentEn: dept.en,
@@ -698,6 +713,8 @@ export async function schoolRecallAction(counterToken: string): Promise<SchoolTo
 
   await publishSchoolCall(counter.branch_id, 'token-recalled', {
     tokenCode: token.tokenCode,
+    counterId: counter.id,
+    departmentId: token.departmentId,
     counterEn: counter.name_en,
     counterAr: counter.name_ar,
     departmentEn: dept.en,
@@ -800,6 +817,10 @@ export async function schoolTransferAction(
       transferred_from_department_id: row.department_id,
       status: 'waiting',
       counter_id: null,
+      // A transfer sends the visitor to a different desk's queue; the pin to
+      // the originating desk would otherwise keep every other window from
+      // ever calling them.
+      target_counter_id: null,
       called_at: null,
       joined_at: new Date().toISOString(),
     })

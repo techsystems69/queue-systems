@@ -22,6 +22,9 @@ export interface CreatePairingCodeInput {
   branchId: string
   role: 'kiosk' | 'display'
   screenId?: string
+  // School only: pair one of the branch's scoped kiosks instead of the
+  // branch-wide kiosk.
+  kioskId?: string
 }
 export type CreatePairingCodeAction = (
   input: CreatePairingCodeInput,
@@ -31,12 +34,14 @@ export function DevicePairingDialog({
   branchId,
   role,
   screenId,
+  kioskId,
   label,
   createCode,
 }: {
   branchId: string
   role: 'kiosk' | 'display'
   screenId?: string
+  kioskId?: string
   label: string
   createCode: CreatePairingCodeAction
 }) {
@@ -50,7 +55,7 @@ export function DevicePairingDialog({
   const generate = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const res = await createCode({ branchId, role, screenId })
+    const res = await createCode({ branchId, role, screenId, kioskId })
     setLoading(false)
     if (res.error || !res.code) {
       setError(res.error ?? 'Could not create a code')
@@ -59,7 +64,7 @@ export function DevicePairingDialog({
     }
     setCode(res.code)
     setExpiresAt(res.expiresAt ? new Date(res.expiresAt).getTime() : null)
-  }, [branchId, role, screenId, createCode])
+  }, [branchId, role, screenId, kioskId, createCode])
 
   // Fresh code each time the dialog opens; clear it on close so a stale number
   // is never left on screen.

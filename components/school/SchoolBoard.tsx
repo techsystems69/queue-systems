@@ -186,6 +186,22 @@ export function SchoolBoard({ screenToken, initial }: {
             ) : null
           })}
         </div>
+        {packet.scoped && (packet.departments ?? []).length > 0 && (
+          // A department display says whose queue it is — the lobby TV and
+          // the Fees-wing TV otherwise look identical.
+          <div className="flex max-w-[40%] flex-wrap justify-end gap-2">
+            {(packet.departments ?? []).map((d) => (
+              <span
+                key={d.id}
+                className="flex items-center gap-2 rounded-full border border-slate-200 bg-slate-50 px-4 py-1.5 font-semibold text-slate-700"
+                style={{ fontSize: 'clamp(0.9rem, 1.4vw, 1.5rem)' }}
+              >
+                <span className="size-3 rounded-full" style={{ backgroundColor: d.color }} />
+                {d.name?.[boardLocale] || d.name?.en || d.name_en}
+              </span>
+            ))}
+          </div>
+        )}
         {packet.showClock !== false && (
           <DisplayClock timeColor="#0F172A" dateColor="#64748B" />
         )}

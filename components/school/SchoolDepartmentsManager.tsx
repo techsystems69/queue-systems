@@ -7,7 +7,7 @@ import {
   Building2, Landmark, UserPlus, Users, Receipt, CreditCard, Wallet, FileText,
   ClipboardList, GraduationCap, BookOpen, Library, Bus, Car, ConciergeBell,
   ShoppingBag, ShoppingCart, Shirt, HeartHandshake, Stethoscope, Cross, Phone,
-  Mail, Calendar, CalendarDays, Home, Info, HelpCircle, Award, BadgeCheck,
+  Mail, Calendar, CalendarDays, Home, Info, HelpCircle, Award, BadgeCheck, MonitorSmartphone,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -24,6 +24,7 @@ import {
   deleteSchoolDepartmentAction,
   reorderSchoolDepartmentsAction,
   seedSchoolDepartmentsAction,
+  provisionSchoolDeskAction,
   type SchoolDepartmentResult,
 } from '@/lib/actions/school-admin'
 import {
@@ -67,6 +68,7 @@ export function SchoolDepartmentsManager({ branchId, initialDepartments, quota }
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<SchoolDepartmentDTO | null>(null)
   const [deleting, setDeleting] = useState<SchoolDepartmentDTO | null>(null)
+  const [desk, setDesk] = useState<SchoolDepartmentDTO | null>(null)
   const [createState, createAction, creating] = useActionState(createSchoolDepartmentAction, INIT)
   const [editState, editAction, saving] = useActionState(editSchoolDepartmentAction, INIT)
   const [lastSaved, setLastSaved] = useState<SchoolDepartmentDTO | null>(null)
@@ -97,6 +99,24 @@ export function SchoolDepartmentsManager({ branchId, initialDepartments, quota }
         toast.success(`Added ${result.created} departments`)
         window.location.reload()
       }
+    })
+  }
+
+  function provisionDesk(dept: SchoolDepartmentDTO, withDisplay: boolean, withKiosk: boolean) {
+    startTransition(async () => {
+      const result = await provisionSchoolDeskAction({
+        branchId, departmentId: dept.id, withDisplay, withKiosk,
+      })
+      if (result.error) {
+        toast.error(result.error)
+        // A partial desk (counter made, display refused by the plan) is real:
+        // the counter exists, so close the dialog rather than invite a retry
+        // that would create a second one.
+        if (result.counterId) setDesk(null)
+        return
+      }
+      setDesk(null)
+      toast.success(`${dept.nameEn} desk is ready — find its links under Devices and Counters`)
     })
   }
 
@@ -268,6 +288,12 @@ export function SchoolDepartmentsManager({ branchId, initialDepartments, quota }
                 <Pencil className="size-3.5" />
                 Edit
               </Button>
+              {dept.isActive && (
+                <Button variant="outline" size="sm" disabled={pending} onClick={() => setDesk(dept)}>
+                  <MonitorSmartphone className="size-3.5" />
+                  Set up desk
+                </Button>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -291,6 +317,14 @@ export function SchoolDepartmentsManager({ branchId, initialDepartments, quota }
           ))}
         </ul>
       )}
+
+      <DeskDialog
+        branchId={branchId}
+        department={desk}
+        pending={pending}
+        onClose={() => setDesk(null)}
+        onProvision={provisionDesk}
+      />
 
       <EditDialog
         branchId={branchId}
@@ -472,6 +506,58 @@ function EditDialog({ branchId, department, action, error, saving, onClose }: {
             </Button>
           </form>
         )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// One department, one desk: a counter that serves only it, plus (optionally) a
+// calling display that lists only that counter and a kiosk whose tickets only
+// that counter can call. Everything it creates can be edited afterwards on the
+// Counters and Devices pages.
+function DeskDialog({ department, pending, onClose, onProvision }: {
+  branchId: string
+  department: SchoolDepartmentDTO | null
+  pending: boolean
+  onClose: () => void
+  onProvision: (dept: SchoolDepartmentDTO, withDisplay: boolean, withKiosk: boolean) => void
+}) {
+  const [withDisplay, setWithDisplay] = useState(true)
+  const [withKiosk, setWithKiosk] = useState(true)
+
+  return (
+    <Dialog open={!!department} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Set up a desk for {department?.nameEn}</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          Creates a counter that serves only this department. It counts against your counter
+          allowance{withDisplay ? ' and, with a display, your screen allowance' : ''}.
+        </p>
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-3">
+          <span>
+            <span className="block text-sm font-medium text-slate-800">Calling display</span>
+            <span className="block text-xs text-muted-foreground">A TV that lists only this desk</span>
+          </span>
+          <Switch checked={withDisplay} onCheckedChange={setWithDisplay} />
+        </label>
+        <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-3">
+          <span>
+            <span className="block text-sm font-medium text-slate-800">Ticket kiosk</span>
+            <span className="block text-xs text-muted-foreground">
+              Its tickets can only be called by this desk
+            </span>
+          </span>
+          <Switch checked={withKiosk} onCheckedChange={setWithKiosk} />
+        </label>
+        <Button
+          disabled={pending}
+          onClick={() => department && onProvision(department, withDisplay, withKiosk)}
+          className="w-full bg-accent-600 hover:bg-accent-700 text-white"
+        >
+          {pending ? 'Setting up…' : 'Create desk'}
+        </Button>
       </DialogContent>
     </Dialog>
   )

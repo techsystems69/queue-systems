@@ -2,7 +2,7 @@
 
 import { after } from 'next/server'
 import { getSchoolBoard, getSchoolCounterView, getSchoolKioskFeed } from '@/lib/dal/school'
-import { touchScreen } from '@/lib/cache/presence'
+import { touchScreen, touchKiosk } from '@/lib/cache/presence'
 import type {
   SchoolBoardPacket, SchoolKioskFeed, SchoolCounterView as CounterView,
 } from '@/lib/db/school-types'
@@ -40,5 +40,8 @@ export async function fetchSchoolCounterViewAction(counterToken: string): Promis
 // Thin wrapper so the kiosk can re-poll what its page was server-rendered
 // with. The query itself lives in the DAL, where the page reads it too.
 export async function fetchSchoolKioskFeedAction(branchToken: string): Promise<SchoolKioskFeed> {
-  return getSchoolKioskFeed(branchToken)
+  const feed = await getSchoolKioskFeed(branchToken)
+  // Only a scoped kiosk has a row to stamp; the branch-token kiosk reports none.
+  if (feed.status === 'ok' && feed.kioskId) after(() => touchKiosk(branchToken))
+  return feed
 }
